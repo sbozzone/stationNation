@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#F5F0E8">
+  <title>Family Dinner Time</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽</text></svg>">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lora:wght@700&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+
+  <!-- datalist for ingredient units -->
+  <datalist id="unit-list">
+    <option value="lbs"><option value="oz"><option value="cups"><option value="tbsp">
+    <option value="tsp"><option value="cans"><option value="bags"><option value="heads">
+    <option value="bunches"><option value="pints"><option value="boxes"><option value="slices">
+    <option value="whole"><option value="cloves"><option value="stalks">
+  </datalist>
+</head>
+<body>
+
+<!-- ─── App Shell ───────────────────────────────────────────────── -->
+<div id="app-shell">
+  <main id="page"><!-- rendered by app.js --></main>
+  <nav id="nav" aria-label="Main navigation"><!-- rendered by app.js --></nav>
+</div>
+
+<!-- ─── Bottom Sheet ───────────────────────────────────────────── -->
+<div id="sheet-overlay" class="sheet-overlay" aria-hidden="true"></div>
+<div id="sheet-panel" class="sheet-panel" role="dialog" aria-modal="true"><!-- rendered by app.js --></div>
+
+<!-- ─── Home Splash ────────────────────────────────────────────── -->
+<div id="splash" role="dialog" aria-modal="true" aria-label="Family Dinner Time — Home">
+  <img src="assets/splash-1.jpg" alt="Family Dinner Time — Powered by AI" onerror="this.src='assets/splash-2.png'">
+  <button class="splash-dismiss" data-action="dismiss-splash" aria-label="Close home screen">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="6 9 12 15 18 9"/></svg>
+    <span>Tap to dismiss</span>
+  </button>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
