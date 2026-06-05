@@ -609,32 +609,36 @@ function DeviceScreenRouter({
     // ONBOARDING 01a INTRO
     case '01a_Intro':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-gradient-to-b from-[#1D9E75] to-[#1B2A4A] p-6 text-white pt-24 pb-12 select-none h-full">
+        <div className="flex-1 flex flex-col justify-between bg-gradient-to-b from-[#1A52B5] to-[#0D2255] p-6 text-white pt-24 pb-12 select-none h-full">
           <div className="flex flex-col items-center text-center mt-12">
-            {/* Logo placeholder */}
+            {/* Logo */}
             <div className="w-20 h-20 bg-white/10 rounded-2xl border border-white/20 flex items-center justify-center shadow-2xl mb-8">
               <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-9-4.5h.008v.008H3V6.75zm.008 9h.008v.008H3v-.008zm0 2.25h.008v.008H3v-.008zM4.5 20.25h15A2.25 2.25 0 0021.75 18V6A2.25 2.25 0 0019.5 3.75h-15A2.25 2.25 0 002.25 6v12A2.25 2.25 0 004.5 20.25zm2.25-13.5h.008v.008H6.75V6.75zm.008 4.5h.008v.008H6.75v-.008zm0 4.5h.008v.008H6.75v-.008z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
               </svg>
             </div>
-            <h1 className="text-3xl font-display font-semibold tracking-tight leading-tight">
-              Station Nation
+            <h1 className="text-3xl font-display font-bold tracking-tight leading-tight">
+              PITSTOP
             </h1>
-            <p className="text-sm font-light text-slate-200 max-w-xs mt-3">
+            <p className="text-sm font-semibold text-[#5B9BD5] tracking-wide mt-1">
+              FIND. RATE. RELIEVE.
+            </p>
+            <p className="text-sm font-light text-slate-300 max-w-xs mt-3">
               Find the cleanest, safest stop. Confirmed by drivers in real-time.
             </p>
           </div>
 
           <div className="flex flex-col gap-6">
-            <div className="flex flex-col gap-1 items-center bg-[#17243c]/40 backdrop-blur border border-white/10 p-4 rounded-2xl">
-              <span className="text-xs text-brand-coral font-bold uppercase tracking-wider">🌟 Clean Loop MVP</span>
+            <div className="flex flex-col gap-1 items-center bg-white/5 backdrop-blur border border-white/10 p-4 rounded-2xl">
+              <span className="text-xs text-[#5B9BD5] font-bold uppercase tracking-wider">Powered by Station Nation</span>
               <p className="text-[11px] text-slate-300 text-center font-light leading-4">
                 Designed to guide solo drivers, parents, and travelers to high-quality rest stops, quickly.
               </p>
             </div>
             <button
               onClick={() => navigateTo('01b_Location', 'push-left')}
-              className="w-full bg-[#1D9E75] hover:bg-[#15825f] text-white font-semibold py-3 rounded-2xl shadow-xl transition-all font-display text-center cursor-pointer min-h-[48px]"
+              className="w-full bg-[#1A52B5] hover:bg-[#1645A0] text-white font-semibold py-3 rounded-2xl shadow-xl transition-all font-display text-center cursor-pointer min-h-[48px] border border-[#5B9BD5]/30"
             >
               Get started
             </button>
@@ -645,9 +649,9 @@ function DeviceScreenRouter({
     // ONBOARDING 01b LOCATION
     case '01b_Location':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-slate-900 p-6 text-white pt-24 pb-12 h-full">
+        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-24 pb-12 h-full">
           <div className="flex flex-col items-center text-center mt-12">
-            <div className="w-16 h-16 bg-[#378ADD]/20 rounded-full flex items-center justify-center text-[#378ADD] mb-6">
+            <div className="w-16 h-16 bg-[#1A52B5]/30 rounded-full flex items-center justify-center text-[#5B9BD5] mb-6">
               <svg className="w-8 h-8 animate-bounce" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
@@ -681,9 +685,9 @@ function DeviceScreenRouter({
     // ONBOARDING 01c AVATAR
     case '01c_Avatar':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-slate-900 p-6 text-white pt-24 pb-12 h-full">
+        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-24 pb-12 h-full">
           <div className="flex flex-col items-center mt-6">
-            <span className="text-xs font-semibold text-brand-teal uppercase tracking-widest mb-2">Step 3 of 3</span>
+            <span className="text-xs font-semibold text-[#5B9BD5] uppercase tracking-widest mb-2">Step 3 of 3</span>
             <h2 className="text-2xl font-display font-semibold text-slate-100 text-center mb-6">
               Create your profile
             </h2>
@@ -708,7 +712,7 @@ function DeviceScreenRouter({
                 value={user.username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Choose a username"
-                className="w-full bg-slate-800 text-white font-sans text-base px-4 py-3 rounded-2xl border border-slate-700 outline-none focus:border-brand-teal transition-all shadow-inner"
+                className="w-full bg-[#0a1a42] text-white font-sans text-base px-4 py-3 rounded-2xl border border-[#1A52B5]/60 outline-none focus:border-[#5B9BD5] transition-all shadow-inner"
               />
               <span className="text-xs text-slate-500 font-light italic mt-1">
                 🔒 Your real name stays private to protect safety.
@@ -718,7 +722,7 @@ function DeviceScreenRouter({
 
           <button
             onClick={() => navigateTo('03_MapHome', 'dissolve')}
-            className="w-full bg-[#1D9E75] hover:bg-[#15825f] text-white font-semibold py-3 rounded-2xl shadow-xl font-display cursor-pointer"
+            className="w-full bg-[#1A52B5] hover:bg-[#1645A0] text-white font-semibold py-3 rounded-2xl shadow-xl font-display cursor-pointer border border-[#5B9BD5]/30"
           >
             Start exploring
           </button>
