@@ -406,6 +406,15 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Demo Mode badge */}
+        {useDemoMode && (
+          <div className="absolute top-[64px] left-1/2 -translate-x-1/2 z-[997] pointer-events-none">
+            <span className="px-2.5 py-1 rounded-full bg-amber-400 text-slate-900 text-[10px] font-bold uppercase tracking-wider shadow-lg">
+              Demo Mode
+            </span>
+          </div>
+        )}
+
         {/* Confetti */}
         {confetti.length > 0 && (
           <div className="absolute inset-0 pointer-events-none z-[9999] overflow-hidden">
