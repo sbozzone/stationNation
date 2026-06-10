@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ScreenId, Station, CleanlinessTier, SafetyBadge, Review, TransitionType } from './types';
 import { mockStations } from './mockData';
+import { fetchStations, submitReview } from '../lib/data';
 
 // Confetti particle generator helper
 interface ConfettiParticle {
@@ -109,6 +110,19 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [confetti]);
 
+  // Load stations from Supabase on mount; fall back to mock data on failure or empty result
+  useEffect(() => {
+    fetchStations().then((data) => {
+      if (data && data.length > 0) {
+        setStations(data);
+        logAction('Stations loaded from Supabase.');
+      } else {
+        logAction('Using mock data (Supabase returned no rows or error).');
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Handle Clean/Gross voting action (2-Tap core)
   const handleRatingVote = (isClean: boolean) => {
     setTempRatingScore(isClean ? 5 : 1.5);
@@ -144,6 +158,15 @@ export default function Home() {
             helpfulCount: 0,
           };
 
+          // Fire-and-forget submit to Supabase (local state updates regardless)
+          submitReview(s.id, {
+            id: newReview.id,
+            username: newReview.username,
+            avatarInitials: newReview.avatarInitials,
+            text: newReview.text,
+            score: newReview.score,
+          });
+
           return {
             ...s,
             ratingCount: newCount,
@@ -163,7 +186,7 @@ export default function Home() {
     setStationsRated((sr) => sr + 1);
     setPeopleHelped((ph) => ph + 12);
     logAction('Points earned: +10 pts! Streak increased! Station score updated.');
-    
+
     triggerConfetti();
     navigateTo('08_Rate_Confirm', 'dissolve');
   };
@@ -194,6 +217,15 @@ export default function Home() {
             helpfulCount: 0,
           };
 
+          // Fire-and-forget submit to Supabase (local state updates regardless)
+          submitReview(s.id, {
+            id: newReview.id,
+            username: newReview.username,
+            avatarInitials: newReview.avatarInitials,
+            text: newReview.text,
+            score: newReview.score,
+          });
+
           return {
             ...s,
             ratingCount: newCount,
@@ -212,7 +244,7 @@ export default function Home() {
     setStationsRated((sr) => sr + 1);
     setPeopleHelped((ph) => ph + 12);
     logAction('Detailed review submitted! +10 pts earned.');
-    
+
     triggerConfetti();
     navigateTo('08_Rate_Confirm', 'dissolve');
   };

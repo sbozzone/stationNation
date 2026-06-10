@@ -1,0 +1,143 @@
+import { supabase } from './supabase';
+import type { Station, Review, CleanlinessTier, SafetyBadge, SubRatings } from '../app/types';
+
+// ── DB row shapes ──────────────────────────────────────────────────────────────
+
+interface StationRow {
+  id: string;
+  name: string;
+  distance: string;
+  cleanliness_tier: string;
+  score: number;
+  rating_count: number;
+  freshness_hours: number;
+  safety_badges: string[];
+  sub_ratings: { clean: number; friendly: number; convenient: number };
+  latitude: number;
+  longitude: number;
+  created_at: string;
+  reviews?: ReviewRow[];
+}
+
+interface ReviewRow {
+  id: string;
+  station_id: string;
+  username: string;
+  avatar_initials: string;
+  created_at: string;
+  text: string;
+  score: number;
+  helpful_count: number;
+}
+
+// ── Mappers ────────────────────────────────────────────────────────────────────
+
+function mapReview(row: ReviewRow): Review {
+  // Convert ISO timestamp to a human-readable "time ago" string
+  const diffMs = Date.now() - new Date(row.created_at).getTime();
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  let timestamp: string;
+  if (diffHours < 1) {
+    timestamp = 'Just now';
+  } else if (diffHours < 24) {
+    timestamp = `${diffHours}h ago`;
+  } else {
+    const diffDays = Math.floor(diffHours / 24);
+    timestamp = `${diffDays}d ago`;
+  }
+
+  return {
+    id: row.id,
+    username: row.username,
+    avatarInitials: row.avatar_initials,
+    timestamp,
+    text: row.text,
+    score: Number(row.score),
+    helpfulCount: row.helpful_count,
+    userVoted: null,
+  };
+}
+
+function mapStation(row: StationRow): Station {
+  return {
+    id: row.id,
+    name: row.name,
+    distance: row.distance,
+    cleanlinessTier: row.cleanliness_tier as CleanlinessTier,
+    score: Number(row.score),
+    ratingCount: row.rating_count,
+    freshnessHours: Number(row.freshness_hours),
+    safetyBadges: (row.safety_badges ?? []) as SafetyBadge[],
+    subRatings: row.sub_ratings as SubRatings,
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    reviews: (row.reviews ?? []).map(mapReview),
+  };
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch all stations with their reviews.
+ * Returns null on any error so the caller can fall back to mock data.
+ */
+export async function fetchStations(): Promise<Station[] | null> {
+  try {
+    const { data, error } = await supabase
+      .from('stations')
+      .select('*, reviews(*)')
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('[StationNation] fetchStations error:', error.message);
+      return null;
+    }
+
+    if (!data || data.length === 0) {
+      return null;
+    }
+
+    return (data as StationRow[]).map(mapStation);
+  } catch (err) {
+    console.error('[StationNation] fetchStations unexpected error:', err);
+    return null;
+  }
+}
+
+/**
+ * Insert a new review for a station.
+ * The DB trigger will recalculate the station's score and rating_count automatically.
+ * Returns true on success, false on failure (caller keeps local-state update either way).
+ */
+export async function submitReview(
+  stationId: string,
+  review: {
+    id: string;
+    username: string;
+    avatarInitials: string;
+    text: string;
+    score: number;
+  }
+): Promise<boolean> {
+  try {
+    const { error } = await supabase.from('reviews').insert({
+      id: review.id,
+      station_id: stationId,
+      username: review.username,
+      avatar_initials: review.avatarInitials,
+      text: review.text,
+      score: review.score,
+      helpful_count: 0,
+    });
+
+    if (error) {
+      console.error('[StationNation] submitReview error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error('[StationNation] submitReview unexpected error:', err);
+    return false;
+  }
+}
