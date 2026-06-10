@@ -19,7 +19,9 @@ interface ConfettiParticle {
 
 export default function Home() {
   // Live State
-  const [stations, setStations] = useState<Station[]>(mockStations);
+  // Only use mock data if explicitly enabled via environment variable; otherwise start empty
+  const useDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+  const [stations, setStations] = useState<Station[]>(useDemoMode ? mockStations : []);
   const [activeScreen, setActiveScreen] = useState<ScreenId>('00_Splash');
   const [prevScreen, setPrevScreen] = useState<ScreenId | null>(null);
   const [transitionType, setTransitionType] = useState<TransitionType>('instant');
@@ -110,18 +112,21 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [confetti]);
 
-  // Load stations from Supabase on mount; fall back to mock data on failure or empty result
+  // Load stations from Supabase on mount
   useEffect(() => {
     fetchStations().then((data) => {
       if (data && data.length > 0) {
         setStations(data);
         logAction('Stations loaded from Supabase.');
+      } else if (useDemoMode) {
+        setStations(mockStations);
+        logAction('Using mock data (demo mode enabled).');
       } else {
-        logAction('Using mock data (Supabase returned no rows or error).');
+        logAction('No stations available from Supabase.');
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [useDemoMode]);
 
   // Handle Clean/Gross voting action (2-Tap core)
   const handleRatingVote = (isClean: boolean) => {
@@ -330,7 +335,7 @@ export default function Home() {
 
   // Reset entire simulator back to onboarding
   const handleResetSimulator = () => {
-    setStations(mockStations);
+    setStations(useDemoMode ? mockStations : []);
     setSelectedStationId('chevron-valley');
     resetRatingFlow();
     setUsername('DriverAlpha');
