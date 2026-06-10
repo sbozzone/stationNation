@@ -59,8 +59,10 @@ CREATE POLICY "reviews_insert_anon"
 -- Trigger: recalculate station score on review insert
 -- ============================================================
 
+-- SECURITY DEFINER so the trigger can update stations despite RLS
+-- (anonymous users have no UPDATE policy on stations, by design)
 CREATE OR REPLACE FUNCTION recalculate_station_score()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   UPDATE stations
   SET
