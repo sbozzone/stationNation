@@ -173,12 +173,23 @@ export async function fetchReviewerRank(
 }
 
 /**
- * Insert a new review for a station.
- * The DB trigger will recalculate the station's score and rating_count automatically.
- * Returns true on success, false on failure (caller keeps local-state update either way).
+ * Result of a review submission:
+ *  - true          → inserted successfully
+ *  - 'rate_limited'→ rejected by the 12h-per-station rate-limit trigger
+ *  - false         → any other failure (network, auth, validation)
+ */
+export type SubmitReviewResult = true | false | 'rate_limited';
+
+/**
+ * Insert a new review for a station, attributed to the signed-in user.
+ * The DB trigger recalculates the station's score and rating_count, and
+ * enforces the 12h-per-station rate limit (raising a 'rate limit …' error).
+ * Returns 'rate_limited' when that trigger rejects the insert so the caller
+ * can roll back its optimistic update; true on success; false otherwise.
  */
 export async function submitReview(
   stationId: string,
+  userId: string,
   review: {
     id: string;
     username: string;
@@ -186,11 +197,12 @@ export async function submitReview(
     text: string;
     score: number;
   }
-): Promise<boolean> {
+): Promise<SubmitReviewResult> {
   try {
     const { error } = await supabase.from('reviews').insert({
       id: review.id,
       station_id: stationId,
+      user_id: userId,
       username: review.username,
       avatar_initials: review.avatarInitials,
       text: review.text,
@@ -199,6 +211,10 @@ export async function submitReview(
     });
 
     if (error) {
+      // The rate-limit trigger raises a message containing 'rate limit'.
+      if (error.message.toLowerCase().includes('rate limit')) {
+        return 'rate_limited';
+      }
       console.error('[StationNation] submitReview error:', error.message);
       return false;
     }
@@ -206,6 +222,112 @@ export async function submitReview(
     return true;
   } catch (err) {
     console.error('[StationNation] submitReview unexpected error:', err);
+    return false;
+  }
+}
+
+// ── Profiles (Supabase Auth accounts) ───────────────────────────────────────────
+
+interface ProfileRow {
+  id: string;
+  username: string;
+  created_at: string;
+}
+
+/**
+ * Result of a profile insert/update that may collide on the unique username index:
+ *  - true            → succeeded
+ *  - 'name_taken'    → unique-violation on lower(username)
+ *  - false           → any other failure
+ */
+export type ProfileWriteResult = true | false | 'name_taken';
+
+/**
+ * Fetch the signed-in user's profiles row.
+ * Returns the row, null if none exists, or null on error (treated as "no row").
+ */
+export async function fetchMyProfile(
+  userId: string
+): Promise<{ id: string; username: string } | null> {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, username')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('[StationNation] fetchMyProfile error:', error.message);
+      return null;
+    }
+
+    if (!data) return null;
+    const row = data as ProfileRow;
+    return { id: row.id, username: row.username };
+  } catch (err) {
+    console.error('[StationNation] fetchMyProfile unexpected error:', err);
+    return null;
+  }
+}
+
+/**
+ * Detect a Postgres unique-violation (SQLSTATE 23505) from a Supabase error.
+ */
+function isUniqueViolation(error: { code?: string; message?: string }): boolean {
+  return error.code === '23505' || (error.message ?? '').toLowerCase().includes('duplicate key');
+}
+
+/**
+ * Create the signed-in user's profiles row with the given username.
+ * Returns 'name_taken' on the unique-violation so the caller can prompt for
+ * a different name; true on success; false on any other failure.
+ */
+export async function createMyProfile(
+  userId: string,
+  username: string
+): Promise<ProfileWriteResult> {
+  try {
+    const { error } = await supabase.from('profiles').insert({
+      id: userId,
+      username: username.trim(),
+    });
+
+    if (error) {
+      if (isUniqueViolation(error)) return 'name_taken';
+      console.error('[StationNation] createMyProfile error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error('[StationNation] createMyProfile unexpected error:', err);
+    return false;
+  }
+}
+
+/**
+ * Update the signed-in user's profiles.username.
+ * Returns 'name_taken' on the unique-violation; true on success; false otherwise.
+ */
+export async function updateMyUsername(
+  userId: string,
+  username: string
+): Promise<ProfileWriteResult> {
+  try {
+    const { error } = await supabase
+      .from('profiles')
+      .update({ username: username.trim() })
+      .eq('id', userId);
+
+    if (error) {
+      if (isUniqueViolation(error)) return 'name_taken';
+      console.error('[StationNation] updateMyUsername error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error('[StationNation] updateMyUsername unexpected error:', err);
     return false;
   }
 }

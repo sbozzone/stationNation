@@ -11,7 +11,9 @@ export type ScreenId =
   | '08_Rate_Confirm'
   | '09_Profile'
   | '10_EmptyState'
-  | '11_Settings';
+  | '11_Settings'
+  | '12_SignIn'
+  | '13_ClaimName';
 
 export type CleanlinessTier = 'clean' | 'mixed' | 'gross' | 'unrated';
 
