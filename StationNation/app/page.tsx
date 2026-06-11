@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ScreenId, Station, CleanlinessTier, SafetyBadge, Review, TransitionType } from './types';
 import { mockStations } from './mockData';
 import { fetchStations, submitReview } from '../lib/data';
 import { loadProfile, saveProfile, deriveInitials, computeNewStreak, type Profile } from './profile';
+import { useGeolocation, haversineDistanceMiles, formatDistanceMiles, type GeoCoords } from './useGeolocation';
 
 // Confetti particle generator helper
 interface ConfettiParticle {
@@ -56,6 +57,9 @@ export default function Home() {
   const [safeAtNightMode] = useState<boolean>(true); // Night ink background
   const [confetti, setConfetti] = useState<ConfettiParticle[]>([]);
   const [mapRecenterTrigger, setMapRecenterTrigger] = useState<number>(0);
+
+  // Geolocation
+  const { coords: userCoords, status: geoStatus, requestLocation } = useGeolocation();
 
   // Container ref for confetti bounds
   const containerRef = useRef<HTMLDivElement>(null);
@@ -131,6 +135,9 @@ export default function Home() {
     if (profile.onboarded) {
       // Skip onboarding — go straight to the main map/list screen.
       setActiveScreen('03_MapHome');
+      // Returning user: request location immediately (Permissions API may resolve silently
+      // if already granted, otherwise the hook does nothing until the user acts).
+      requestLocation();
     }
     setProfileReady(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -170,6 +177,30 @@ export default function Home() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useDemoMode]);
+
+  // Enrich stations with computed distances whenever raw stations or user coords change.
+  // Produces nearest-first sorted list; falls back to DB order + raw distance text when
+  // coords are unavailable.
+  const enrichedStations = useMemo<Station[]>(() => {
+    if (!userCoords) {
+      // No location: return as-is, ensuring distance shows DB value or "—"
+      return stations.map((s) => ({
+        ...s,
+        distance: s.distance || '—',
+      }));
+    }
+    const withDist = stations.map((s) => {
+      const miles = haversineDistanceMiles(userCoords.lat, userCoords.lng, s.latitude, s.longitude);
+      return {
+        ...s,
+        distanceMiles: miles,
+        distance: formatDistanceMiles(miles),
+      };
+    });
+    // Sort nearest first
+    withDist.sort((a, b) => (a.distanceMiles ?? 0) - (b.distanceMiles ?? 0));
+    return withDist;
+  }, [stations, userCoords]);
 
   // Handle Clean/Gross voting action (2-Tap core)
   const handleRatingVote = (isClean: boolean) => {
@@ -386,8 +417,8 @@ export default function Home() {
     }, 3000);
   };
 
-  // Filters calculation
-  const filteredStations = stations.filter((station) => {
+  // Filters calculation (applied on top of enriched, distance-sorted stations)
+  const filteredStations = enrichedStations.filter((station) => {
     // If search text is present
     if (searchQuery && !station.name.toLowerCase().includes(searchQuery.toLowerCase())) {
       return false;
@@ -453,11 +484,11 @@ export default function Home() {
             prevScreen={prevScreen}
             transitionType={transitionType}
             stations={filteredStations}
-            allStations={stations}
+            allStations={enrichedStations}
             selectedStationId={selectedStationId}
             setSelectedStationId={(id) => {
               setSelectedStationId(id);
-              const st = stations.find(s => s.id === id);
+              const st = enrichedStations.find(s => s.id === id);
               if (st && st.cleanlinessTier === 'unrated') {
                 navigateTo('10_EmptyState', 'push-up');
               } else {
@@ -491,6 +522,9 @@ export default function Home() {
             mapRecenterTrigger={mapRecenterTrigger}
             setMapRecenterTrigger={setMapRecenterTrigger}
             logAction={logAction}
+            userCoords={userCoords}
+            geoStatus={geoStatus}
+            requestLocation={requestLocation}
           />
         </div>
       </div>
@@ -540,6 +574,9 @@ interface ScreenRouterProps {
   mapRecenterTrigger: number;
   setMapRecenterTrigger: React.Dispatch<React.SetStateAction<number>>;
   logAction: (msg: string) => void;
+  userCoords: GeoCoords | null;
+  geoStatus: string;
+  requestLocation: () => void;
 }
 
 function DeviceScreenRouter({
@@ -575,6 +612,9 @@ function DeviceScreenRouter({
   mapRecenterTrigger,
   setMapRecenterTrigger,
   logAction,
+  userCoords,
+  geoStatus,
+  requestLocation,
 }: ScreenRouterProps) {
   
   // Quick Tag toggle helper
@@ -717,7 +757,10 @@ function DeviceScreenRouter({
 
           <div className="flex flex-col gap-3">
             <button
-              onClick={() => navigateTo('01c_Avatar', 'push-left')}
+              onClick={() => {
+                requestLocation();
+                navigateTo('01c_Avatar', 'push-left');
+              }}
               className="w-full bg-[#378ADD] hover:bg-blue-700 text-white font-semibold py-3 rounded-2xl shadow-lg font-display cursor-pointer"
             >
               Allow location
@@ -858,7 +901,7 @@ function DeviceScreenRouter({
           {/* Map Region (y≈143 -> ~620) */}
           <div className="flex-1 relative bg-[#e2dec9] overflow-hidden">
             {/* Friendly Game Board stylized map design */}
-            <GameMapSVG stations={stations} selectedStationId={selectedStationId} onPinSelect={setSelectedStationId} mapRecenterTrigger={mapRecenterTrigger} />
+            <GameMapSVG stations={stations} selectedStationId={selectedStationId} onPinSelect={setSelectedStationId} mapRecenterTrigger={mapRecenterTrigger} userCoords={userCoords} />
 
             {/* Floating Recenter Button bottom-right */}
             <button
@@ -884,6 +927,11 @@ function DeviceScreenRouter({
             <h3 className="text-sm font-display font-semibold tracking-tight text-slate-400 mb-2 uppercase tracking-widest text-center">
               Nearest clean stops
             </h3>
+            {(geoStatus === 'denied' || geoStatus === 'unavailable') && (
+              <p className="text-[10px] text-slate-500 text-center mb-2 italic">
+                Enable location for real distances
+              </p>
+            )}
             
             {/* List cards (visible at peek) */}
             <div className="flex flex-col gap-2 max-h-48 overflow-y-auto pr-1">
@@ -1663,17 +1711,89 @@ function BottomTabBar({ activeTab, navigateTo }: { activeTab: 'map' | 'profile';
   );
 }
 
+// SVG viewport dimensions
+const MAP_W = 361;
+const MAP_H = 477;
+
+/**
+ * Compute a bounding box over all station lat/lng values plus optional user coords.
+ * Returns { minLat, maxLat, minLng, maxLng } padded ~10%.
+ * Handles 0-station and 1-station edge cases gracefully.
+ */
+function computeBBox(
+  stations: Station[],
+  userCoords: GeoCoords | null
+): { minLat: number; maxLat: number; minLng: number; maxLng: number } {
+  const pts: { lat: number; lng: number }[] = stations.map((s) => ({
+    lat: s.latitude,
+    lng: s.longitude,
+  }));
+  if (userCoords) {
+    pts.push({ lat: userCoords.lat, lng: userCoords.lng });
+  }
+
+  if (pts.length === 0) {
+    // Empty: return a sensible default centred on 0,0
+    return { minLat: -1, maxLat: 1, minLng: -1, maxLng: 1 };
+  }
+
+  let minLat = pts[0].lat, maxLat = pts[0].lat;
+  let minLng = pts[0].lng, maxLng = pts[0].lng;
+  for (const p of pts) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  }
+
+  // For single-point (or very close points), spread a small area so the pin doesn't
+  // land exactly on the edge.
+  const latSpan = maxLat - minLat || 0.02;
+  const lngSpan = maxLng - minLng || 0.02;
+
+  const padLat = latSpan * 0.15;
+  const padLng = lngSpan * 0.15;
+
+  return {
+    minLat: minLat - padLat,
+    maxLat: maxLat + padLat,
+    minLng: minLng - padLng,
+    maxLng: maxLng + padLng,
+  };
+}
+
+/**
+ * Project a lat/lng into SVG pixel coordinates within the viewport.
+ * Latitude increases upward (north), so we invert Y.
+ */
+function project(
+  lat: number,
+  lng: number,
+  bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number }
+): { x: number; y: number } {
+  const latRange = bbox.maxLat - bbox.minLat || 1;
+  const lngRange = bbox.maxLng - bbox.minLng || 1;
+
+  const x = ((lng - bbox.minLng) / lngRange) * MAP_W;
+  // Invert Y: higher lat = lower pixel Y (north = up)
+  const y = ((bbox.maxLat - lat) / latRange) * MAP_H;
+
+  return { x, y };
+}
+
 // Custom vector stylized game-board map simulator using SVG
 function GameMapSVG({
   stations,
   selectedStationId,
   onPinSelect,
   mapRecenterTrigger,
+  userCoords,
 }: {
   stations: Station[];
   selectedStationId: string;
   onPinSelect: (id: string) => void;
   mapRecenterTrigger: number;
+  userCoords: GeoCoords | null;
 }) {
   const [mapScale, setMapScale] = useState(1);
   const [panX, setPanX] = useState(0);
@@ -1686,6 +1806,23 @@ function GameMapSVG({
     setPanY(0);
   }, [mapRecenterTrigger]);
 
+  // Compute bounding box and projections
+  const bbox = useMemo(() => computeBBox(stations, userCoords), [stations, userCoords]);
+
+  const stationPins = useMemo(
+    () =>
+      stations.map((st) => ({
+        ...st,
+        ...project(st.latitude, st.longitude, bbox),
+      })),
+    [stations, bbox]
+  );
+
+  const userPin = useMemo(
+    () => (userCoords ? project(userCoords.lat, userCoords.lng, bbox) : null),
+    [userCoords, bbox]
+  );
+
   return (
     <div className="w-full h-full relative cursor-grab active:cursor-grabbing select-none overflow-hidden bg-[#E5E1D3]">
       <svg
@@ -1693,53 +1830,59 @@ function GameMapSVG({
         style={{
           transform: `scale(${mapScale}) translate(${panX}px, ${panY}px)`,
         }}
-        viewBox="0 0 361 477"
+        viewBox={`0 0 ${MAP_W} ${MAP_H}`}
         xmlns="http://www.w3.org/2000/svg"
       >
-        {/* River background styling */}
+        {/* Map background: subtle terrain colours */}
+        <rect x="0" y="0" width={MAP_W} height={MAP_H} fill="#E5E1D3" />
+
+        {/* Decorative river — scaled to viewBox */}
         <path
-          d="M-20 200 Q 100 220 180 310 T 380 320"
+          d={`M-20 ${MAP_H * 0.42} Q ${MAP_W * 0.28} ${MAP_H * 0.46} ${MAP_W * 0.5} ${MAP_H * 0.65} T ${MAP_W + 20} ${MAP_H * 0.67}`}
           fill="none"
           stroke="#93C5FD"
           strokeWidth="35"
           strokeLinecap="round"
-          opacity="0.85"
+          opacity="0.7"
         />
-        
-        {/* Winding pathways / roads */}
-        {/* Road 1: Valley Blvd */}
-        <line x1="-10" y1="120" x2="380" y2="120" stroke="#FAF8F5" strokeWidth="24" strokeLinecap="round" />
-        <line x1="-10" y1="120" x2="380" y2="120" stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
-        <text x="20" y="112" fill="#9CA3AF" fontSize="8" fontWeight="bold" fontFamily="sans-serif">VALLEY BLVD</text>
 
-        {/* Road 2: Route 9 */}
-        <line x1="160" y1="-10" x2="160" y2="500" stroke="#FAF8F5" strokeWidth="20" strokeLinecap="round" />
-        <line x1="160" y1="-10" x2="160" y2="500" stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
-        <text x="168" y="240" fill="#9CA3AF" fontSize="8" fontWeight="bold" transform="rotate(90 168 240)" fontFamily="sans-serif">ROUTE 9</text>
+        {/* Decorative roads */}
+        <line x1="-10" y1={MAP_H * 0.25} x2={MAP_W + 10} y2={MAP_H * 0.25} stroke="#FAF8F5" strokeWidth="22" strokeLinecap="round" />
+        <line x1="-10" y1={MAP_H * 0.25} x2={MAP_W + 10} y2={MAP_H * 0.25} stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
 
-        {/* Road 3: Crossing Ave */}
-        <line x1="-10" y1="360" x2="380" y2="360" stroke="#FAF8F5" strokeWidth="22" strokeLinecap="round" />
-        <line x1="-10" y1="360" x2="380" y2="360" stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
-        <text x="240" y="352" fill="#9CA3AF" fontSize="8" fontWeight="bold" fontFamily="sans-serif">CROSSING AVE</text>
+        <line x1={MAP_W * 0.44} y1="-10" x2={MAP_W * 0.44} y2={MAP_H + 10} stroke="#FAF8F5" strokeWidth="18" strokeLinecap="round" />
+        <line x1={MAP_W * 0.44} y1="-10" x2={MAP_W * 0.44} y2={MAP_H + 10} stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
 
-        {/* Green Parks / Grass board blocks */}
-        <rect x="20" y="20" width="80" height="70" rx="16" fill="#A7F3D0" opacity="0.6" />
-        <text x="32" y="58" fill="#047857" fontSize="9" fontWeight="bold" fontFamily="sans-serif">Avon Green</text>
+        <line x1="-10" y1={MAP_H * 0.75} x2={MAP_W + 10} y2={MAP_H * 0.75} stroke="#FAF8F5" strokeWidth="20" strokeLinecap="round" />
+        <line x1="-10" y1={MAP_H * 0.75} x2={MAP_W + 10} y2={MAP_H * 0.75} stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
 
-        <rect x="210" y="160" width="120" height="100" rx="20" fill="#A7F3D0" opacity="0.6" />
-        <text x="235" y="210" fill="#047857" fontSize="9" fontWeight="bold" fontFamily="sans-serif">Wildwood Park</text>
+        {/* Green park patches */}
+        <rect x="20" y="20" width="80" height="60" rx="14" fill="#A7F3D0" opacity="0.55" />
+        <rect x={MAP_W * 0.58} y={MAP_H * 0.33} width="110" height="90" rx="18" fill="#A7F3D0" opacity="0.55" />
+        <circle cx="55" cy={MAP_H * 0.88} r="38" fill="#A7F3D0" opacity="0.55" />
 
-        <circle cx="60" cy="420" r="40" fill="#A7F3D0" opacity="0.6" />
+        {/* Empty state label */}
+        {stations.length === 0 && (
+          <text
+            x={MAP_W / 2}
+            y={MAP_H / 2}
+            textAnchor="middle"
+            fill="#9CA3AF"
+            fontSize="13"
+            fontFamily="sans-serif"
+          >
+            No stations loaded
+          </text>
+        )}
 
-        {/* Draw Pins and click bounds */}
-        {stations.map((st, index) => {
+        {/* Station pins projected from real coords */}
+        {stationPins.map((st, index) => {
           const isSelected = st.id === selectedStationId;
-          // Cleanliness tier color
-          const color = st.cleanlinessTier === 'clean' ? '#1D9E75' :
-                        st.cleanlinessTier === 'mixed' ? '#BA7517' :
-                        st.cleanlinessTier === 'gross' ? '#E24B4A' :
-                        '#6B6B6B';
-          
+          const color =
+            st.cleanlinessTier === 'clean' ? '#1D9E75' :
+            st.cleanlinessTier === 'mixed' ? '#BA7517' :
+            st.cleanlinessTier === 'gross' ? '#E24B4A' :
+            '#6B6B6B';
           const isUnrated = st.cleanlinessTier === 'unrated';
 
           return (
@@ -1748,19 +1891,18 @@ function GameMapSVG({
               onClick={() => onPinSelect(st.id)}
               className="cursor-pointer"
               style={{
-                // Drop bounce stagger
                 animation: `pin-drop-bounce 0.6s cubic-bezier(0.25, 1, 0.5, 1) ${index * 0.12}s forwards`,
                 transform: 'translateY(-100px)',
                 opacity: 0,
               }}
             >
-              {/* Pin Base Shadow */}
-              <ellipse cx={st.longitude} cy={st.latitude + 14} rx="6" ry="3" fill="#1e293b" opacity="0.25" />
+              {/* Pin base shadow */}
+              <ellipse cx={st.x} cy={st.y + 14} rx="6" ry="3" fill="#1e293b" opacity="0.25" />
 
-              {/* Pin Pill Label */}
+              {/* Pin pill */}
               <rect
-                x={st.longitude - 22}
-                y={st.latitude - 14}
+                x={st.x - 22}
+                y={st.y - 14}
                 width="44"
                 height="22"
                 rx="11"
@@ -1772,15 +1914,15 @@ function GameMapSVG({
                 className="transition-all duration-300"
               />
 
-              {/* Emoji restroom icon inside pill */}
-              <text x={st.longitude - 14} y={st.latitude + 1} fontSize="10" fill="#ffffff">
+              {/* Icon */}
+              <text x={st.x - 14} y={st.y + 1} fontSize="10" fill="#ffffff">
                 {isUnrated ? '❔' : '🚽'}
               </text>
 
-              {/* Pin score text */}
+              {/* Score */}
               <text
-                x={st.longitude + 6}
-                y={st.latitude + 1}
+                x={st.x + 6}
+                y={st.y + 1}
                 fontSize="8"
                 fontWeight="bold"
                 fill="#ffffff"
@@ -1790,14 +1932,23 @@ function GameMapSVG({
                 {isUnrated ? '?' : st.score}
               </text>
 
-              {/* Pointer indicator */}
+              {/* Pointer triangle */}
               <path
-                d={`M ${st.longitude} ${st.latitude + 8} L ${st.longitude - 4} ${st.latitude + 4} L ${st.longitude + 4} ${st.latitude + 4} Z`}
+                d={`M ${st.x} ${st.y + 8} L ${st.x - 4} ${st.y + 4} L ${st.x + 4} ${st.y + 4} Z`}
                 fill={isSelected ? '#1B2A4A' : color}
               />
             </g>
           );
         })}
+
+        {/* User position dot */}
+        {userPin && (
+          <g>
+            <circle cx={userPin.x} cy={userPin.y} r="10" fill="#378ADD" opacity="0.2" />
+            <circle cx={userPin.x} cy={userPin.y} r="6" fill="#378ADD" stroke="#ffffff" strokeWidth="2" />
+            <circle cx={userPin.x} cy={userPin.y} r="3" fill="#ffffff" />
+          </g>
+        )}
       </svg>
     </div>
   );
