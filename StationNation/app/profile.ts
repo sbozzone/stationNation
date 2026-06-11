@@ -95,6 +95,46 @@ export function saveProfile(profile: Profile): void {
   }
 }
 
+// ── Helpful-vote persistence ──────────────────────────────────────────────────
+
+const VOTES_KEY = 'stationnation.votes';
+
+export type VoteDirection = 'up' | 'down';
+
+/** Map of reviewId → vote direction for this device. */
+export type VoteMap = Record<string, VoteDirection>;
+
+/**
+ * Load the stored vote map from localStorage.
+ * Returns an empty object on SSR, parse errors, or missing key.
+ */
+export function loadVotes(): VoteMap {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(VOTES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    return parsed as VoteMap;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Persist the vote map to localStorage. No-op on SSR.
+ */
+export function saveVotes(votes: VoteMap): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(VOTES_KEY, JSON.stringify(votes));
+  } catch {
+    // Storage quota or private-mode errors — silently ignore.
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Compute today's date string (YYYY-MM-DD) in local time.
  */

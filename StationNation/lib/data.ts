@@ -105,6 +105,74 @@ export async function fetchStations(): Promise<Station[] | null> {
 }
 
 /**
+ * Increment or decrement reviews.helpful_count via a SECURITY DEFINER RPC.
+ * delta must be -2, -1, 1, or 2 (the DB function enforces this).
+ * Returns true on success, false on failure (caller keeps optimistic local update either way).
+ */
+export async function voteReviewHelpful(reviewId: string, delta: number): Promise<boolean> {
+  try {
+    const { error } = await supabase.rpc('vote_review_helpful', {
+      review_id: reviewId,
+      delta,
+    });
+
+    if (error) {
+      console.error('[StationNation] voteReviewHelpful error:', error.message);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error('[StationNation] voteReviewHelpful unexpected error:', err);
+    return false;
+  }
+}
+
+/**
+ * Fetch reviewer rank for the given username.
+ * Aggregates review counts per username client-side (dataset is tiny in alpha)
+ * and returns the 1-based rank (1 = most reviews) plus total distinct reviewers.
+ * Returns null on error or if the user has submitted no reviews.
+ */
+export async function fetchReviewerRank(
+  username: string
+): Promise<{ rank: number; total: number } | null> {
+  try {
+    const { data, error } = await supabase
+      .from('reviews')
+      .select('username');
+
+    if (error) {
+      console.error('[StationNation] fetchReviewerRank error:', error.message);
+      return null;
+    }
+
+    if (!data || data.length === 0) return null;
+
+    // Aggregate counts per reviewer
+    const counts: Record<string, number> = {};
+    for (const row of data as { username: string }[]) {
+      counts[row.username] = (counts[row.username] ?? 0) + 1;
+    }
+
+    const userCount = counts[username];
+    if (!userCount) return null; // user has no reviews
+
+    // Sort reviewers descending by count; ties share the better rank (dense rank)
+    const sorted = Object.values(counts).sort((a, b) => b - a);
+
+    // Find position of the first entry equal to this user's count
+    const rank = sorted.indexOf(userCount) + 1;
+    const total = sorted.length;
+
+    return { rank, total };
+  } catch (err) {
+    console.error('[StationNation] fetchReviewerRank unexpected error:', err);
+    return null;
+  }
+}
+
+/**
  * Insert a new review for a station.
  * The DB trigger will recalculate the station's score and rating_count automatically.
  * Returns true on success, false on failure (caller keeps local-state update either way).
