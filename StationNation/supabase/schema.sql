@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS stations (
   freshness_hours NUMERIC(6,2) NOT NULL DEFAULT 0,
   safety_badges   TEXT[]      NOT NULL DEFAULT '{}',
   sub_ratings     JSONB       NOT NULL DEFAULT '{"clean":0,"friendly":0,"convenient":0}',
-  latitude        NUMERIC(6,2) NOT NULL DEFAULT 50,
-  longitude       NUMERIC(6,2) NOT NULL DEFAULT 50,
+  latitude        NUMERIC(9,6) NOT NULL DEFAULT 0,
+  longitude       NUMERIC(9,6) NOT NULL DEFAULT 0,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
