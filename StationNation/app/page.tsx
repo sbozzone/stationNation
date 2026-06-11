@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ScreenId, Station, CleanlinessTier, SafetyBadge, Review, TransitionType } from './types';
 import { mockStations } from './mockData';
 import { fetchStations, submitReview } from '../lib/data';
+import { loadProfile, saveProfile, deriveInitials, computeNewStreak, type Profile } from './profile';
 
 // Confetti particle generator helper
 interface ConfettiParticle {
@@ -39,13 +40,17 @@ export default function Home() {
   const [tempRatingPhoto, setTempRatingPhoto] = useState<boolean>(false);
   const [showToast, setShowToast] = useState<boolean>(false);
   
-  // User Profile State
-  const [username, setUsername] = useState<string>('DriverAlpha');
-  const [points, setPoints] = useState<number>(1240);
-  const [streak, setStreak] = useState<number>(3);
-  const [stationsRated, setStationsRated] = useState<number>(47);
-  const [peopleHelped, setPeopleHelped] = useState<number>(132);
-  const [cityRank, setCityRank] = useState<number>(3);
+  // User Profile State — initialised to zero/blank; loaded from localStorage in the mount effect below.
+  const [username, setUsername] = useState<string>('');
+  const [points, setPoints] = useState<number>(0);
+  const [streak, setStreak] = useState<number>(0);
+  const [stationsRated, setStationsRated] = useState<number>(0);
+  const [peopleHelped, setPeopleHelped] = useState<number>(0);
+  const [lastRatedDay, setLastRatedDay] = useState<string | undefined>(undefined);
+  // profileReady: true once the mount effect has run (avoids a flash of the splash screen before we know if onboarding was completed).
+  const [profileReady, setProfileReady] = useState<boolean>(false);
+  // Temp nickname captured during the 01c_Avatar onboarding step (separate from committed username).
+  const [onboardingNickname, setOnboardingNickname] = useState<string>('');
   
   // Theme / UX State
   const [safeAtNightMode] = useState<boolean>(true); // Night ink background
@@ -114,6 +119,42 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [confetti]);
 
+  // Load profile from localStorage on mount (client-only, guard SSR).
+  useEffect(() => {
+    const profile = loadProfile();
+    setUsername(profile.username);
+    setPoints(profile.points);
+    setStreak(profile.streak);
+    setStationsRated(profile.stationsRated);
+    setPeopleHelped(profile.peopleHelped);
+    setLastRatedDay(profile.lastRatedDay);
+    if (profile.onboarded) {
+      // Skip onboarding — go straight to the main map/list screen.
+      setActiveScreen('03_MapHome');
+    }
+    setProfileReady(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist profile whenever any tracked stat changes (skip until profile is loaded).
+  useEffect(() => {
+    if (!profileReady) return;
+    const profile: Profile = {
+      username,
+      points,
+      streak,
+      stationsRated,
+      peopleHelped,
+      lastRatedDay,
+      onboarded: activeScreen !== '00_Splash' &&
+                 activeScreen !== '01a_Intro' &&
+                 activeScreen !== '01b_Location' &&
+                 activeScreen !== '01c_Avatar',
+    };
+    saveProfile(profile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username, points, streak, stationsRated, peopleHelped, lastRatedDay, profileReady, activeScreen]);
+
   // Load stations from Supabase on mount
   useEffect(() => {
     fetchStations().then((data) => {
@@ -155,10 +196,11 @@ export default function Home() {
           else if (newAvgScore < 2.5) newTier = 'gross';
 
           // Add a review
+          const initials = deriveInitials(username);
           const newReview: Review = {
             id: `rev-user-${Date.now()}`,
             username: username,
-            avatarInitials: username.slice(0, 2).toUpperCase(),
+            avatarInitials: initials,
             timestamp: 'Just now',
             text: isClean ? 'Confirmed clean! Fast and clean stop.' : 'Disgusting conditions, avoid if possible!',
             score: isClean ? 5 : 1.5,
@@ -187,11 +229,15 @@ export default function Home() {
       })
     );
 
-    // Apply points & stats
+    // Apply points & stats; update streak using day-based logic
     setPoints((p) => p + 10);
-    setStreak((s) => s + 1);
     setStationsRated((sr) => sr + 1);
     setPeopleHelped((ph) => ph + 12);
+    setStreak((currentStreak) => {
+      const { newStreak, newLastRatedDay } = computeNewStreak(currentStreak, lastRatedDay);
+      setLastRatedDay(newLastRatedDay);
+      return newStreak;
+    });
     logAction('Points earned: +10 pts! Streak increased! Station score updated.');
 
     triggerConfetti();
@@ -214,10 +260,11 @@ export default function Home() {
           if (newAvgScore >= 4.0) newTier = 'clean';
           else if (newAvgScore < 2.5) newTier = 'gross';
 
+          const initials = deriveInitials(username);
           const newReview: Review = {
             id: `rev-user-${Date.now()}`,
             username: username,
-            avatarInitials: username.slice(0, 2).toUpperCase(),
+            avatarInitials: initials,
             timestamp: 'Just now',
             text: tempRatingNotes || (isClean ? 'Clean and tidy.' : 'Needs servicing soon.'),
             score: tempRatingScore || 4,
@@ -247,9 +294,13 @@ export default function Home() {
     );
 
     setPoints((p) => p + 10);
-    setStreak((s) => s + 1);
     setStationsRated((sr) => sr + 1);
     setPeopleHelped((ph) => ph + 12);
+    setStreak((currentStreak) => {
+      const { newStreak, newLastRatedDay } = computeNewStreak(currentStreak, lastRatedDay);
+      setLastRatedDay(newLastRatedDay);
+      return newStreak;
+    });
     logAction('Detailed review submitted! +10 pts earned.');
 
     triggerConfetti();
@@ -421,8 +472,10 @@ export default function Home() {
             showFiltersModal={showFiltersModal}
             setShowFiltersModal={setShowFiltersModal}
             safeAtNightMode={safeAtNightMode}
-            user={{ username, points, streak, stationsRated, peopleHelped, cityRank }}
+            user={{ username, points, streak, stationsRated, peopleHelped }}
             setUsername={setUsername}
+            onboardingNickname={onboardingNickname}
+            setOnboardingNickname={setOnboardingNickname}
             handleRatingVote={handleRatingVote}
             tempRatingTags={tempRatingTags}
             setTempRatingTags={setTempRatingTags}
@@ -468,9 +521,10 @@ interface ScreenRouterProps {
     streak: number;
     stationsRated: number;
     peopleHelped: number;
-    cityRank: number;
   };
   setUsername: (name: string) => void;
+  onboardingNickname: string;
+  setOnboardingNickname: (name: string) => void;
   handleRatingVote: (isClean: boolean) => void;
   tempRatingTags: string[];
   setTempRatingTags: React.Dispatch<React.SetStateAction<string[]>>;
@@ -504,6 +558,8 @@ function DeviceScreenRouter({
   safeAtNightMode,
   user,
   setUsername,
+  onboardingNickname,
+  setOnboardingNickname,
   handleRatingVote,
   tempRatingTags,
   setTempRatingTags,
@@ -677,7 +733,9 @@ function DeviceScreenRouter({
       );
 
     // ONBOARDING 01c AVATAR
-    case '01c_Avatar':
+    case '01c_Avatar': {
+      const previewInitials = deriveInitials(onboardingNickname);
+      const nicknameValid = onboardingNickname.trim().length > 0;
       return (
         <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-[max(env(safe-area-inset-top),24px)] pb-12 h-full">
           <div className="flex flex-col items-center mt-6">
@@ -685,11 +743,11 @@ function DeviceScreenRouter({
             <h2 className="text-2xl font-display font-semibold text-slate-100 text-center mb-6">
               Create your profile
             </h2>
-            
-            {/* Pick Avatar Placeholder */}
+
+            {/* Avatar preview — shows derived initials live as the user types */}
             <div className="relative group mb-6">
               <div className="w-24 h-24 bg-[#D85A30]/10 border-2 border-brand-coral text-brand-coral rounded-full flex items-center justify-center font-display text-3xl font-bold uppercase shadow-lg shadow-coral-950/20">
-                {user.username ? user.username.slice(0, 2).toUpperCase() : 'DA'}
+                {nicknameValid ? previewInitials : '??'}
               </div>
               <div className="absolute -bottom-1 -right-1 bg-slate-800 text-slate-300 p-1.5 rounded-full border border-slate-700">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -698,16 +756,22 @@ function DeviceScreenRouter({
                 </svg>
               </div>
             </div>
-            
+
             <div className="w-full flex flex-col gap-2">
-              <label className="text-xs font-semibold text-slate-400">Choose your username</label>
+              <label className="text-xs font-semibold text-slate-400">Choose your nickname</label>
               <input
                 type="text"
-                value={user.username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Choose a username"
+                value={onboardingNickname}
+                onChange={(e) => setOnboardingNickname(e.target.value)}
+                maxLength={20}
+                placeholder="e.g. Road Runner"
                 className="w-full bg-[#0a1a42] text-white font-sans text-base px-4 py-3 rounded-2xl border border-[#1A52B5]/60 outline-none focus:border-[#5B9BD5] transition-all shadow-inner"
               />
+              {!nicknameValid && (
+                <span className="text-xs text-brand-coral font-semibold mt-0.5">
+                  Pick a nickname to continue.
+                </span>
+              )}
               <span className="text-xs text-slate-500 font-light italic mt-1">
                 🔒 Your real name stays private to protect safety.
               </span>
@@ -715,13 +779,23 @@ function DeviceScreenRouter({
           </div>
 
           <button
-            onClick={() => navigateTo('03_MapHome', 'dissolve')}
-            className="w-full bg-[#1A52B5] hover:bg-[#1645A0] text-white font-semibold py-3 rounded-2xl shadow-xl font-display cursor-pointer border border-[#5B9BD5]/30"
+            disabled={!nicknameValid}
+            onClick={() => {
+              const trimmed = onboardingNickname.trim();
+              setUsername(trimmed);
+              navigateTo('03_MapHome', 'dissolve');
+            }}
+            className={`w-full text-white font-semibold py-3 rounded-2xl shadow-xl font-display border border-[#5B9BD5]/30 transition-all ${
+              nicknameValid
+                ? 'bg-[#1A52B5] hover:bg-[#1645A0] cursor-pointer'
+                : 'bg-[#1A52B5]/40 cursor-not-allowed opacity-50'
+            }`}
           >
             Start exploring
           </button>
         </div>
       );
+    }
 
     // MAP HOME 03
     case '03_MapHome':
@@ -1381,7 +1455,7 @@ function DeviceScreenRouter({
               </span>
               <p className="text-xs text-slate-300 font-light leading-relaxed">
                 You helped <strong className="text-white font-semibold">{user.peopleHelped} people</strong> this week.
-                You are currently <strong className="text-brand-teal font-semibold">#{user.cityRank} in Avon</strong>!
+                Keep it up — you&apos;re making the road safer for everyone!
               </p>
             </div>
 
@@ -1408,10 +1482,10 @@ function DeviceScreenRouter({
             {/* User Profile Header */}
             <div className="flex items-center gap-4 border-b border-slate-800/40 pb-4">
               <div className="w-16 h-16 bg-brand-coral/10 border border-brand-coral text-brand-coral rounded-full flex items-center justify-center font-display text-2xl font-bold uppercase shadow">
-                {user.username.slice(0, 2)}
+                {deriveInitials(user.username)}
               </div>
               <div>
-                <h2 className="text-lg font-display font-semibold">{user.username}</h2>
+                <h2 className="text-lg font-display font-semibold">{user.username || 'Driver'}</h2>
                 <p className="text-xs text-slate-500 font-light">Member since June 2026</p>
               </div>
             </div>
@@ -1420,7 +1494,7 @@ function DeviceScreenRouter({
             <div className="grid grid-cols-2 gap-3">
               {[
                 { label: 'Total Points', val: `${user.points} pts`, icon: '💎' },
-                { label: 'City Rank', val: `#${user.cityRank} Avon`, icon: '🏆' },
+                { label: 'City Rank', val: '—', icon: '🏆' },
                 { label: 'Stations Rated', val: `${user.stationsRated} stops`, icon: '⭐' },
                 { label: 'People Helped', val: `${user.peopleHelped} drivers`, icon: '🤝' },
               ].map((stat) => (
