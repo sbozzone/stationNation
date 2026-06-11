@@ -12,6 +12,7 @@ export function ProfileScreen({
   reviewerRank,
   setSettingsDisplayName,
   setSettingsResetArmed,
+  session,
 }: Pick<
   ScreenRouterProps,
   | 'navigateTo'
@@ -20,6 +21,7 @@ export function ProfileScreen({
   | 'reviewerRank'
   | 'setSettingsDisplayName'
   | 'setSettingsResetArmed'
+  | 'session'
 >) {
   const { uiTheme, cardTheme, secondaryText } = getTheme(safeAtNightMode);
 
@@ -155,6 +157,19 @@ export function ProfileScreen({
             )}
           </div>
         </div>
+
+        {/* Sign-in nudge — only when signed out (stats currently live locally). */}
+        {!session && (
+          <button
+            onClick={() => navigateTo('12_SignIn', 'push-left')}
+            className={`p-3 rounded-2xl text-xs flex items-center justify-between gap-2 ${cardTheme} hover:opacity-90 transition-all`}
+          >
+            <span className="text-slate-300 font-medium text-left">
+              Sign in to keep your stats across devices
+            </span>
+            <span className="text-[#378ADD] font-bold shrink-0">›</span>
+          </button>
+        )}
 
         {/* Settings link */}
         <button

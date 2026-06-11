@@ -1,7 +1,8 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { ScreenRouterProps, getTheme } from '../screenProps';
+import { updateMyUsername } from '../../../lib/data';
 
 export function SettingsScreen({
   navigateTo,
@@ -13,6 +14,8 @@ export function SettingsScreen({
   setUsername,
   setShowToast,
   setToastMessage,
+  session,
+  handleSignOut,
 }: Pick<
   ScreenRouterProps,
   | 'navigateTo'
@@ -24,9 +27,41 @@ export function SettingsScreen({
   | 'setUsername'
   | 'setShowToast'
   | 'setToastMessage'
+  | 'session'
+  | 'handleSignOut'
 >) {
   const { uiTheme, cardTheme, borderTheme } = getTheme(safeAtNightMode);
   const nameValid = settingsDisplayName.trim().length > 0;
+  // Inline error/saving state for the display-name save (server-side username).
+  const [nameError, setNameError] = useState<string>('');
+  const [nameSaving, setNameSaving] = useState<boolean>(false);
+
+  // Save the display name locally and, when signed in, to profiles.username.
+  const saveDisplayName = async () => {
+    const trimmed = settingsDisplayName.trim();
+    if (!trimmed || nameSaving) return;
+    setNameError('');
+
+    // Signed in: update the server username first so a collision blocks the save.
+    if (session) {
+      setNameSaving(true);
+      const result = await updateMyUsername(session.user.id, trimmed);
+      setNameSaving(false);
+      if (result === 'name_taken') {
+        setNameError('That name is taken');
+        return;
+      }
+      if (result === false) {
+        setNameError('Could not save. Try again.');
+        return;
+      }
+    }
+
+    setUsername(trimmed);
+    setToastMessage('Display name saved!');
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 3000);
+  };
 
   return (
     <div className={`flex-1 flex flex-col pt-[max(env(safe-area-inset-top),16px)] pb-12 ${uiTheme}`}>
@@ -57,23 +92,47 @@ export function SettingsScreen({
             className="w-full bg-slate-800/60 text-white font-sans text-base px-4 py-3 rounded-xl border border-slate-700/60 outline-none focus:border-[#5B9BD5] transition-all"
           />
           <button
-            disabled={!nameValid}
-            onClick={() => {
-              const trimmed = settingsDisplayName.trim();
-              if (!trimmed) return;
-              setUsername(trimmed);
-              setToastMessage('Display name saved!');
-              setShowToast(true);
-              setTimeout(() => setShowToast(false), 3000);
-            }}
+            disabled={!nameValid || nameSaving}
+            onClick={saveDisplayName}
             className={`w-full font-semibold py-3 rounded-xl font-display transition-all text-sm ${
-              nameValid
+              nameValid && !nameSaving
                 ? 'bg-[#1A52B5] hover:bg-[#1645A0] text-white cursor-pointer'
                 : 'bg-[#1A52B5]/40 text-white/50 cursor-not-allowed'
             }`}
           >
-            Save
+            {nameSaving ? 'Saving…' : 'Save'}
           </button>
+          {nameError && (
+            <span className="text-xs text-red-400 font-semibold">{nameError}</span>
+          )}
+        </div>
+
+        {/* Account (Supabase magic-link sign-in) */}
+        <div className={`p-4 rounded-2xl flex flex-col gap-3 ${cardTheme}`}>
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Account</h3>
+          {session ? (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-slate-400">Signed in as</span>
+                <span className="text-xs font-semibold text-slate-200 truncate max-w-[200px]">
+                  {session.user.email}
+                </span>
+              </div>
+              <button
+                onClick={handleSignOut}
+                className="w-full font-semibold py-3 rounded-xl font-display transition-all text-sm bg-transparent hover:bg-slate-800/40 text-slate-300 border border-slate-700/60 cursor-pointer"
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => navigateTo('12_SignIn', 'push-left')}
+              className="w-full font-semibold py-3 rounded-xl font-display transition-all text-sm bg-[#1A52B5] hover:bg-[#1645A0] text-white cursor-pointer"
+            >
+              Sign in
+            </button>
+          )}
         </div>
 
         {/* Data privacy caption */}

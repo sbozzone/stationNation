@@ -3,7 +3,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ScreenId, Station, CleanlinessTier, Review, TransitionType } from './types';
 import { mockStations } from './mockData';
-import { fetchStations, submitReview, voteReviewHelpful, fetchReviewerRank } from '../lib/data';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
+import { fetchStations, submitReview, voteReviewHelpful, fetchReviewerRank, fetchMyProfile, createMyProfile, updateMyUsername } from '../lib/data';
 import { loadProfile, saveProfile, deriveInitials, computeNewStreak, loadVotes, saveVotes, type VoteMap, type Profile, type RecentActivityEntry } from './profile';
 import { useGeolocation, haversineDistanceMiles, formatDistanceMiles, type GeoCoords } from './useGeolocation';
 import { ScreenRouterProps } from './components/screenProps';
@@ -15,6 +17,7 @@ import { RateStep1Screen, RateStep2Screen, RateConfirmScreen } from './component
 import { ProfileScreen } from './components/screens/Profile';
 import { EmptyStateScreen } from './components/screens/EmptyState';
 import { SettingsScreen } from './components/screens/Settings';
+import { SignInScreen, ClaimNameScreen } from './components/screens/AuthScreens';
 
 // Confetti particle generator helper
 interface ConfettiParticle {
@@ -76,6 +79,22 @@ export default function Home() {
   const [settingsDisplayName, setSettingsDisplayName] = useState<string>('');
   const [settingsResetArmed, setSettingsResetArmed] = useState<boolean>(false);
 
+  // Auth state (Supabase magic-link accounts)
+  const [session, setSession] = useState<Session | null>(null);
+  // Where to send the user once they finish signing in (set when a write is
+  // intercepted on a signed-out user; null = nowhere special, stay put).
+  const [pendingAfterAuth, setPendingAfterAuth] = useState<ScreenId | null>(null);
+  // 13_ClaimName state — the screen shown when the local nickname is already taken.
+  const [claimNameValue, setClaimNameValue] = useState<string>('');
+  const [claimNameError, setClaimNameError] = useState<string>('');
+  const [claimNameSaving, setClaimNameSaving] = useState<boolean>(false);
+
+  // Keep the latest username/nickname/pending intent readable inside the auth
+  // subscription callback without re-subscribing on every change.
+  const usernameRef = useRef<string>('');
+  const onboardingNicknameRef = useRef<string>('');
+  const pendingAfterAuthRef = useRef<ScreenId | null>(null);
+
   // Geolocation
   const { coords: userCoords, status: geoStatus, requestLocation } = useGeolocation();
 
@@ -86,6 +105,14 @@ export default function Home() {
   const logAction = useCallback((msg: string) => {
     console.log(`[StationNation] ${msg}`);
   }, []);
+
+  // Mirror values the auth subscription needs into refs (the subscription is
+  // registered once on mount and must read the latest, not the mount-time, value).
+  useEffect(() => {
+    usernameRef.current = username;
+    onboardingNicknameRef.current = onboardingNickname;
+    pendingAfterAuthRef.current = pendingAfterAuth;
+  }, [username, onboardingNickname, pendingAfterAuth]);
 
   // Find active station details
   const activeStation = stations.find((s) => s.id === selectedStationId) || stations[0];
@@ -213,6 +240,84 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useDemoMode]);
 
+  // Navigate to the screen the user was headed for before being asked to sign in.
+  const goToPendingAfterAuth = useCallback(() => {
+    const pending = pendingAfterAuthRef.current;
+    setPendingAfterAuth(null);
+    if (pending) {
+      navigateTo(pending, 'dissolve');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reconcile the local nickname with the server profiles row after sign-in.
+  // - existing row: server wins (adopt its username locally).
+  // - no row: claim the local nickname; on collision, prompt via 13_ClaimName.
+  // Always honours a pending post-auth intent (e.g. returning to a rating screen).
+  const reconcileProfileAfterAuth = useCallback(async (userId: string) => {
+    const existing = await fetchMyProfile(userId);
+    if (existing) {
+      // Server wins — adopt the stored display name into local state/profile.
+      setUsername(existing.username);
+      logAction(`Signed in — adopted server username "${existing.username}".`);
+      goToPendingAfterAuth();
+      return;
+    }
+
+    // No profile yet — claim the locally stored nickname if we have one.
+    const localName = (usernameRef.current || onboardingNicknameRef.current).trim();
+    if (localName.length >= 2) {
+      const result = await createMyProfile(userId, localName);
+      if (result === true) {
+        setUsername(localName);
+        logAction(`Signed in — claimed username "${localName}".`);
+        goToPendingAfterAuth();
+        return;
+      }
+      if (result === 'name_taken') {
+        // Surface the inline prompt to pick a different name.
+        setClaimNameValue('');
+        setClaimNameError('');
+        navigateTo('13_ClaimName', 'dissolve');
+        return;
+      }
+      // Other failure: leave local state as-is, just route onward.
+      goToPendingAfterAuth();
+      return;
+    }
+
+    // No usable local nickname — prompt for one.
+    setClaimNameValue('');
+    setClaimNameError('');
+    navigateTo('13_ClaimName', 'dissolve');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auth bootstrap: read any existing session and subscribe to changes.
+  // Client-only (effect) and fully guarded so placeholder env never crashes.
+  useEffect(() => {
+    let active = true;
+
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        if (active) setSession(data.session);
+      })
+      .catch((err) => console.error('[StationNation] getSession error:', err));
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+      setSession(newSession);
+      if (event === 'SIGNED_IN' && newSession?.user) {
+        reconcileProfileAfterAuth(newSession.user.id);
+      }
+    });
+
+    return () => {
+      active = false;
+      sub.subscription.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Fetch reviewer rank whenever the Profile screen becomes active (Feature 3)
   useEffect(() => {
     if (activeScreen !== '09_Profile' || !username) return;
@@ -243,18 +348,47 @@ export default function Home() {
     return withDist;
   }, [stations, userCoords]);
 
+  // Roll back the optimistic rating changes when the DB rejects the insert
+  // (e.g. the 12h-per-station rate limit). Restores the station's prior
+  // aggregate/review and reverses the points/stats deltas. The recent-activity
+  // entry is removed by reference at the call site.
+  const rollbackOptimisticRating = (snapshot: Station | undefined) => {
+    setStations((prev) =>
+      prev.map((s) => (snapshot && s.id === snapshot.id ? snapshot : s))
+    );
+    // Reverse the +10 / +1 / +12 deltas. Streak/lastRatedDay are day-based and
+    // best-effort; we leave them (a second tap the same day is a no-op anyway).
+    setPoints((p) => Math.max(0, p - 10));
+    setStationsRated((sr) => Math.max(0, sr - 1));
+    setPeopleHelped((ph) => Math.max(0, ph - 12));
+  };
+
   // Handle Clean/Gross voting action (2-Tap core)
   const handleRatingVote = (isClean: boolean) => {
+    // WRITES require sign-in — route signed-out users to the sign-in screen,
+    // remembering to bring them back to Rate Step 1 afterwards.
+    if (!session) {
+      setPendingAfterAuth('06_Rate_Step1');
+      navigateTo('12_SignIn', 'push-left');
+      return;
+    }
+
     setTempRatingScore(isClean ? 5 : 1.5);
     logAction(`Voted restroom: ${isClean ? 'Clean (5.0★)' : 'Gross (1.5★)'}`);
 
-    // Jump straight to confirm (dissolve) or to note step
-    // Spec: "Tapping either button is enough to complete a rating — this is the whole MVP contribution."
-    // Let's go to confirm screen directly!
-    // But user can also go to note. We support both.
-    // If they just click, they rated. Let's do confirmation.
+    const reviewId = `rev-user-${Date.now()}`;
+    const snapshot = stations.find((s) => s.id === selectedStationId);
+    const newReview: Review = {
+      id: reviewId,
+      username: username,
+      avatarInitials: deriveInitials(username),
+      timestamp: 'Just now',
+      text: isClean ? 'Confirmed clean! Fast and clean stop.' : 'Disgusting conditions, avoid if possible!',
+      score: isClean ? 5 : 1.5,
+      helpfulCount: 0,
+    };
 
-    // Calculate new score for the station
+    // Optimistic local aggregate/review update.
     setStations((prevStations) =>
       prevStations.map((s) => {
         if (s.id === selectedStationId) {
@@ -266,27 +400,6 @@ export default function Home() {
           let newTier: CleanlinessTier = 'mixed';
           if (newAvgScore >= 4.0) newTier = 'clean';
           else if (newAvgScore < 2.5) newTier = 'gross';
-
-          // Add a review
-          const initials = deriveInitials(username);
-          const newReview: Review = {
-            id: `rev-user-${Date.now()}`,
-            username: username,
-            avatarInitials: initials,
-            timestamp: 'Just now',
-            text: isClean ? 'Confirmed clean! Fast and clean stop.' : 'Disgusting conditions, avoid if possible!',
-            score: isClean ? 5 : 1.5,
-            helpfulCount: 0,
-          };
-
-          // Fire-and-forget submit to Supabase (local state updates regardless)
-          submitReview(s.id, {
-            id: newReview.id,
-            username: newReview.username,
-            avatarInitials: newReview.avatarInitials,
-            text: newReview.text,
-            score: newReview.score,
-          });
 
           return {
             ...s,
@@ -313,11 +426,11 @@ export default function Home() {
 
     // Record recent activity entry (keep last 10)
     const ratingScore = isClean ? 5 : 1.5;
-    const stationName = stations.find((s) => s.id === selectedStationId)?.name ?? selectedStationId;
+    const stationName = snapshot?.name ?? selectedStationId;
     const activityEntry: RecentActivityEntry = {
       stationName,
       score: ratingScore,
-      text: isClean ? 'Quick rating' : 'Quick rating',
+      text: 'Quick rating',
       ratedAt: new Date().toISOString(),
     };
     setRecentActivity((prev) => [activityEntry, ...prev].slice(0, 10));
@@ -326,14 +439,53 @@ export default function Home() {
 
     triggerConfetti();
     navigateTo('08_Rate_Confirm', 'dissolve');
+
+    // Persist to Supabase; roll back the optimistic changes if rate-limited.
+    submitReview(selectedStationId, session.user.id, {
+      id: newReview.id,
+      username: newReview.username,
+      avatarInitials: newReview.avatarInitials,
+      text: newReview.text,
+      score: newReview.score,
+    }).then((result) => {
+      if (result === 'rate_limited') {
+        rollbackOptimisticRating(snapshot);
+        setRecentActivity((prev) => prev.filter((e) => e !== activityEntry));
+        setToastMessage('You already rated this station in the last 12 hours.');
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 3500);
+      }
+    });
   };
 
   // Submit Detailed Rating Flow
   const handleSubmitDetailedRating = () => {
     // tempRatingScore must be set (enforced by disabled submit button in Step 2)
     if (!tempRatingScore) return;
-    const isClean = tempRatingScore >= 4;
 
+    // WRITES require sign-in — route signed-out users to the sign-in screen,
+    // remembering to bring them back to Rate Step 2 afterwards.
+    if (!session) {
+      setPendingAfterAuth('07_Rate_Step2');
+      navigateTo('12_SignIn', 'push-left');
+      return;
+    }
+
+    const isClean = tempRatingScore >= 4;
+    const reviewId = `rev-user-${Date.now()}`;
+    const reviewText = tempRatingNotes || (isClean ? 'Clean and tidy.' : 'Needs servicing soon.');
+    const snapshot = stations.find((s) => s.id === selectedStationId);
+    const newReview: Review = {
+      id: reviewId,
+      username: username,
+      avatarInitials: deriveInitials(username),
+      timestamp: 'Just now',
+      text: reviewText,
+      score: tempRatingScore,
+      helpfulCount: 0,
+    };
+
+    // Optimistic local aggregate/review update.
     setStations((prevStations) =>
       prevStations.map((s) => {
         if (s.id === selectedStationId) {
@@ -344,26 +496,6 @@ export default function Home() {
           let newTier: CleanlinessTier = 'mixed';
           if (newAvgScore >= 4.0) newTier = 'clean';
           else if (newAvgScore < 2.5) newTier = 'gross';
-
-          const initials = deriveInitials(username);
-          const newReview: Review = {
-            id: `rev-user-${Date.now()}`,
-            username: username,
-            avatarInitials: initials,
-            timestamp: 'Just now',
-            text: tempRatingNotes || (isClean ? 'Clean and tidy.' : 'Needs servicing soon.'),
-            score: tempRatingScore,
-            helpfulCount: 0,
-          };
-
-          // Fire-and-forget submit to Supabase (local state updates regardless)
-          submitReview(s.id, {
-            id: newReview.id,
-            username: newReview.username,
-            avatarInitials: newReview.avatarInitials,
-            text: newReview.text,
-            score: newReview.score,
-          });
 
           return {
             ...s,
@@ -388,11 +520,11 @@ export default function Home() {
     });
 
     // Record recent activity entry (keep last 10)
-    const stationName = stations.find((s) => s.id === selectedStationId)?.name ?? selectedStationId;
+    const stationName = snapshot?.name ?? selectedStationId;
     const activityEntry: RecentActivityEntry = {
       stationName,
       score: tempRatingScore,
-      text: tempRatingNotes || (isClean ? 'Clean and tidy.' : 'Needs servicing soon.'),
+      text: reviewText,
       ratedAt: new Date().toISOString(),
     };
     setRecentActivity((prev) => [activityEntry, ...prev].slice(0, 10));
@@ -401,6 +533,23 @@ export default function Home() {
 
     triggerConfetti();
     navigateTo('08_Rate_Confirm', 'dissolve');
+
+    // Persist to Supabase; roll back the optimistic changes if rate-limited.
+    submitReview(selectedStationId, session.user.id, {
+      id: newReview.id,
+      username: newReview.username,
+      avatarInitials: newReview.avatarInitials,
+      text: newReview.text,
+      score: newReview.score,
+    }).then((result) => {
+      if (result === 'rate_limited') {
+        rollbackOptimisticRating(snapshot);
+        setRecentActivity((prev) => prev.filter((e) => e !== activityEntry));
+        setToastMessage('You already rated this station in the last 12 hours.');
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 3500);
+      }
+    });
   };
 
   // Reset Rating states
@@ -413,6 +562,14 @@ export default function Home() {
 
   // Vote Review Helpfulness
   const toggleHelpfulVote = (reviewId: string, direction: 'up' | 'down') => {
+    // WRITES require sign-in — the helpful-vote RPC is granted to authenticated
+    // users only. Route signed-out users to sign-in and leave the vote unapplied.
+    if (!session) {
+      setPendingAfterAuth('05_StationDetail');
+      navigateTo('12_SignIn', 'push-left');
+      return;
+    }
+
     // Compute delta before updating state (we need the current userVoted value)
     let delta = 0;
     let nextVoteState: 'up' | 'down' | null = direction;
@@ -506,6 +663,40 @@ export default function Home() {
     }, 3000);
   };
 
+  // Sign out (Settings). Stays on Settings; shows a confirmation toast.
+  const handleSignOut = () => {
+    supabase.auth.signOut()
+      .catch((err) => console.error('[StationNation] signOut error:', err))
+      .finally(() => {
+        setToastMessage('Signed out.');
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 3000);
+        logAction('Signed out.');
+      });
+  };
+
+  // 13_ClaimName: retry the profiles insert with a user-supplied name after a
+  // unique-violation at first sign-in. On success, adopt it and route onward.
+  const handleClaimName = () => {
+    const name = claimNameValue.trim();
+    const userId = session?.user.id;
+    if (!userId || name.length < 2 || name.length > 20 || claimNameSaving) return;
+    setClaimNameSaving(true);
+    setClaimNameError('');
+    createMyProfile(userId, name).then((result) => {
+      setClaimNameSaving(false);
+      if (result === true) {
+        setUsername(name);
+        logAction(`Claimed username "${name}".`);
+        goToPendingAfterAuth();
+      } else if (result === 'name_taken') {
+        setClaimNameError('That name is taken. Try another.');
+      } else {
+        setClaimNameError('Could not save that name. Try again.');
+      }
+    });
+  };
+
   // Filters calculation (applied on top of enriched, distance-sorted stations)
   const filteredStations = enrichedStations.filter((station) => {
     // If search text is present
@@ -587,6 +778,13 @@ export default function Home() {
     userCoords,
     geoStatus,
     requestLocation,
+    session,
+    handleSignOut,
+    claimNameValue,
+    setClaimNameValue,
+    claimNameError,
+    claimNameSaving,
+    handleClaimName,
   };
 
   return (
@@ -756,6 +954,7 @@ function DeviceScreenRouter(props: ScreenRouterProps) {
           reviewerRank={props.reviewerRank}
           setSettingsDisplayName={props.setSettingsDisplayName}
           setSettingsResetArmed={props.setSettingsResetArmed}
+          session={props.session}
         />
       );
 
@@ -781,6 +980,28 @@ function DeviceScreenRouter(props: ScreenRouterProps) {
           setUsername={props.setUsername}
           setShowToast={props.setShowToast}
           setToastMessage={props.setToastMessage}
+          session={props.session}
+          handleSignOut={props.handleSignOut}
+        />
+      );
+
+    case '12_SignIn':
+      return (
+        <SignInScreen
+          navigateTo={props.navigateTo}
+          prevScreen={props.prevScreen}
+        />
+      );
+
+    case '13_ClaimName':
+      return (
+        <ClaimNameScreen
+          safeAtNightMode={props.safeAtNightMode}
+          claimNameValue={props.claimNameValue}
+          setClaimNameValue={props.setClaimNameValue}
+          claimNameError={props.claimNameError}
+          claimNameSaving={props.claimNameSaving}
+          handleClaimName={props.handleClaimName}
         />
       );
 

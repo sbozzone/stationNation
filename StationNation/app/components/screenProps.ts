@@ -1,4 +1,5 @@
 import React from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { ScreenId, Station, TransitionType } from '../types';
 import { RecentActivityEntry } from '../profile';
 import { GeoCoords } from '../useGeolocation';
@@ -58,6 +59,15 @@ export interface ScreenRouterProps {
   userCoords: GeoCoords | null;
   geoStatus: string;
   requestLocation: () => void;
+  // Auth (Supabase magic-link accounts)
+  session: Session | null;
+  handleSignOut: () => void;
+  // 13_ClaimName screen state/handler (first-sign-in username collision)
+  claimNameValue: string;
+  setClaimNameValue: (name: string) => void;
+  claimNameError: string;
+  claimNameSaving: boolean;
+  handleClaimName: () => void;
 }
 
 // Theme helpers derived from safeAtNightMode — shared across screens
