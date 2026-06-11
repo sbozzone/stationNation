@@ -10,7 +10,8 @@ export type ScreenId =
   | '07_Rate_Step2'
   | '08_Rate_Confirm'
   | '09_Profile'
-  | '10_EmptyState';
+  | '10_EmptyState'
+  | '11_Settings';
 
 export type CleanlinessTier = 'clean' | 'mixed' | 'gross' | 'unrated';
 
