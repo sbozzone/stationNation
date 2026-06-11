@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ScreenId, Station, CleanlinessTier, SafetyBadge, Review, TransitionType } from './types';
 import { mockStations } from './mockData';
 import { fetchStations, submitReview } from '../lib/data';
-import { loadProfile, saveProfile, deriveInitials, computeNewStreak, type Profile } from './profile';
+import { loadProfile, saveProfile, deriveInitials, computeNewStreak, type Profile, type RecentActivityEntry } from './profile';
 import { useGeolocation, haversineDistanceMiles, formatDistanceMiles, type GeoCoords } from './useGeolocation';
 
 // Confetti particle generator helper
@@ -32,7 +32,6 @@ export default function Home() {
   // Search and Filter States
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeFilters, setActiveFilters] = useState<string[]>(['Safe at night']);
-  const [showFiltersModal, setShowFiltersModal] = useState<boolean>(false);
   
   // Rating Flow State
   const [tempRatingScore, setTempRatingScore] = useState<number | null>(null); // 5 for clean, 1.5 for gross
@@ -40,6 +39,7 @@ export default function Home() {
   const [tempRatingNotes, setTempRatingNotes] = useState<string>('');
   const [tempRatingPhoto, setTempRatingPhoto] = useState<boolean>(false);
   const [showToast, setShowToast] = useState<boolean>(false);
+  const [toastMessage, setToastMessage] = useState<string>('');
   
   // User Profile State — initialised to zero/blank; loaded from localStorage in the mount effect below.
   const [username, setUsername] = useState<string>('');
@@ -48,6 +48,8 @@ export default function Home() {
   const [stationsRated, setStationsRated] = useState<number>(0);
   const [peopleHelped, setPeopleHelped] = useState<number>(0);
   const [lastRatedDay, setLastRatedDay] = useState<string | undefined>(undefined);
+  const [createdAt, setCreatedAt] = useState<string | undefined>(undefined);
+  const [recentActivity, setRecentActivity] = useState<RecentActivityEntry[]>([]);
   // profileReady: true once the mount effect has run (avoids a flash of the splash screen before we know if onboarding was completed).
   const [profileReady, setProfileReady] = useState<boolean>(false);
   // Temp nickname captured during the 01c_Avatar onboarding step (separate from committed username).
@@ -132,6 +134,8 @@ export default function Home() {
     setStationsRated(profile.stationsRated);
     setPeopleHelped(profile.peopleHelped);
     setLastRatedDay(profile.lastRatedDay);
+    setCreatedAt(profile.createdAt);
+    setRecentActivity(profile.recentActivity ?? []);
     if (profile.onboarded) {
       // Skip onboarding — go straight to the main map/list screen.
       setActiveScreen('03_MapHome');
@@ -157,10 +161,12 @@ export default function Home() {
                  activeScreen !== '01a_Intro' &&
                  activeScreen !== '01b_Location' &&
                  activeScreen !== '01c_Avatar',
+      createdAt,
+      recentActivity,
     };
     saveProfile(profile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [username, points, streak, stationsRated, peopleHelped, lastRatedDay, profileReady, activeScreen]);
+  }, [username, points, streak, stationsRated, peopleHelped, lastRatedDay, profileReady, activeScreen, createdAt, recentActivity]);
 
   // Load stations from Supabase on mount
   useEffect(() => {
@@ -269,6 +275,18 @@ export default function Home() {
       setLastRatedDay(newLastRatedDay);
       return newStreak;
     });
+
+    // Record recent activity entry (keep last 10)
+    const ratingScore = isClean ? 5 : 1.5;
+    const stationName = stations.find((s) => s.id === selectedStationId)?.name ?? selectedStationId;
+    const activityEntry: RecentActivityEntry = {
+      stationName,
+      score: ratingScore,
+      text: isClean ? 'Quick rating' : 'Quick rating',
+      ratedAt: new Date().toISOString(),
+    };
+    setRecentActivity((prev) => [activityEntry, ...prev].slice(0, 10));
+
     logAction('Points earned: +10 pts! Streak increased! Station score updated.');
 
     triggerConfetti();
@@ -277,16 +295,17 @@ export default function Home() {
 
   // Submit Detailed Rating Flow
   const handleSubmitDetailedRating = () => {
-    // Add rating details
-    const isClean = tempRatingScore ? tempRatingScore >= 4 : true;
-    
+    // tempRatingScore must be set (enforced by disabled submit button in Step 2)
+    if (!tempRatingScore) return;
+    const isClean = tempRatingScore >= 4;
+
     setStations((prevStations) =>
       prevStations.map((s) => {
         if (s.id === selectedStationId) {
           const newCount = s.ratingCount + 1;
           const currentTotalScore = s.score * s.ratingCount;
-          const newAvgScore = Number(((currentTotalScore + (tempRatingScore || 4.0)) / newCount).toFixed(1));
-          
+          const newAvgScore = Number(((currentTotalScore + tempRatingScore) / newCount).toFixed(1));
+
           let newTier: CleanlinessTier = 'mixed';
           if (newAvgScore >= 4.0) newTier = 'clean';
           else if (newAvgScore < 2.5) newTier = 'gross';
@@ -298,7 +317,7 @@ export default function Home() {
             avatarInitials: initials,
             timestamp: 'Just now',
             text: tempRatingNotes || (isClean ? 'Clean and tidy.' : 'Needs servicing soon.'),
-            score: tempRatingScore || 4,
+            score: tempRatingScore,
             helpfulCount: 0,
           };
 
@@ -332,6 +351,17 @@ export default function Home() {
       setLastRatedDay(newLastRatedDay);
       return newStreak;
     });
+
+    // Record recent activity entry (keep last 10)
+    const stationName = stations.find((s) => s.id === selectedStationId)?.name ?? selectedStationId;
+    const activityEntry: RecentActivityEntry = {
+      stationName,
+      score: tempRatingScore,
+      text: tempRatingNotes || (isClean ? 'Clean and tidy.' : 'Needs servicing soon.'),
+      ratedAt: new Date().toISOString(),
+    };
+    setRecentActivity((prev) => [activityEntry, ...prev].slice(0, 10));
+
     logAction('Detailed review submitted! +10 pts earned.');
 
     triggerConfetti();
@@ -392,7 +422,7 @@ export default function Home() {
   // Freshness ✓ / ✗ inline verification
   const handleFreshnessVerification = (stillClean: boolean) => {
     logAction(`User verified restroom is still ${stillClean ? 'CLEAN' : 'NOT CLEAN'}`);
-    
+
     // Update freshness timestamp and add rating count
     setStations((prev) =>
       prev.map((s) => {
@@ -406,12 +436,16 @@ export default function Home() {
         return s;
       })
     );
-    
-    // Show validation alert
+
+    // Show validation toast with action-appropriate message
+    const msg = stillClean
+      ? 'Thanks — confirmed still clean. +5 pts'
+      : 'Thanks — flagged for re-check. +5 pts';
+    setToastMessage(msg);
     setShowToast(true);
     setPoints((p) => p + 5); // Mini points for confirmation check
     logAction('Confirmed freshness. Earned +5 pts.');
-    
+
     setTimeout(() => {
       setShowToast(false);
     }, 3000);
@@ -426,6 +460,10 @@ export default function Home() {
     // Filter chip logic:
     // "Safe at night": requires score >= 3.5 or specific safety badges
     if (activeFilters.includes('Safe at night') && station.cleanlinessTier === 'gross') {
+      return false;
+    }
+    // "Clean 3★+": score >= 3 (unrated stations excluded)
+    if (activeFilters.includes('Clean 3★+') && station.score < 3.0) {
       return false;
     }
     // "Clean 4★+": score >= 4
@@ -500,14 +538,14 @@ export default function Home() {
             setSearchQuery={setSearchQuery}
             activeFilters={activeFilters}
             setActiveFilters={setActiveFilters}
-            showFiltersModal={showFiltersModal}
-            setShowFiltersModal={setShowFiltersModal}
             safeAtNightMode={safeAtNightMode}
-            user={{ username, points, streak, stationsRated, peopleHelped }}
+            user={{ username, points, streak, stationsRated, peopleHelped, createdAt, recentActivity }}
             setUsername={setUsername}
             onboardingNickname={onboardingNickname}
             setOnboardingNickname={setOnboardingNickname}
             handleRatingVote={handleRatingVote}
+            tempRatingScore={tempRatingScore}
+            setTempRatingScore={setTempRatingScore}
             tempRatingTags={tempRatingTags}
             setTempRatingTags={setTempRatingTags}
             tempRatingNotes={tempRatingNotes}
@@ -519,6 +557,7 @@ export default function Home() {
             toggleHelpfulVote={toggleHelpfulVote}
             handleFreshnessVerification={handleFreshnessVerification}
             showToast={showToast}
+            toastMessage={toastMessage}
             mapRecenterTrigger={mapRecenterTrigger}
             setMapRecenterTrigger={setMapRecenterTrigger}
             logAction={logAction}
@@ -546,8 +585,6 @@ interface ScreenRouterProps {
   setSearchQuery: (query: string) => void;
   activeFilters: string[];
   setActiveFilters: React.Dispatch<React.SetStateAction<string[]>>;
-  showFiltersModal: boolean;
-  setShowFiltersModal: (show: boolean) => void;
   safeAtNightMode: boolean;
   user: {
     username: string;
@@ -555,11 +592,15 @@ interface ScreenRouterProps {
     streak: number;
     stationsRated: number;
     peopleHelped: number;
+    createdAt?: string;
+    recentActivity: RecentActivityEntry[];
   };
   setUsername: (name: string) => void;
   onboardingNickname: string;
   setOnboardingNickname: (name: string) => void;
   handleRatingVote: (isClean: boolean) => void;
+  tempRatingScore: number | null;
+  setTempRatingScore: (score: number | null) => void;
   tempRatingTags: string[];
   setTempRatingTags: React.Dispatch<React.SetStateAction<string[]>>;
   tempRatingNotes: string;
@@ -571,6 +612,7 @@ interface ScreenRouterProps {
   toggleHelpfulVote: (reviewId: string, direction: 'up' | 'down') => void;
   handleFreshnessVerification: (stillClean: boolean) => void;
   showToast: boolean;
+  toastMessage: string;
   mapRecenterTrigger: number;
   setMapRecenterTrigger: React.Dispatch<React.SetStateAction<number>>;
   logAction: (msg: string) => void;
@@ -590,14 +632,14 @@ function DeviceScreenRouter({
   setSearchQuery,
   activeFilters,
   setActiveFilters,
-  showFiltersModal,
-  setShowFiltersModal,
   safeAtNightMode,
   user,
   setUsername,
   onboardingNickname,
   setOnboardingNickname,
   handleRatingVote,
+  tempRatingScore,
+  setTempRatingScore,
   tempRatingTags,
   setTempRatingTags,
   tempRatingNotes,
@@ -609,6 +651,7 @@ function DeviceScreenRouter({
   toggleHelpfulVote,
   handleFreshnessVerification,
   showToast,
+  toastMessage,
   mapRecenterTrigger,
   setMapRecenterTrigger,
   logAction,
@@ -867,7 +910,7 @@ function DeviceScreenRouter({
 
             {/* Filter chips horizontal scroll */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar select-none">
-              {['Safe at night', 'Open now', 'Clean 4★+', 'Restroom indoor'].map((filter) => {
+              {['Safe at night', 'Clean 4★+', 'Restroom indoor'].map((filter) => {
                 const isActive = activeFilters.includes(filter);
                 return (
                   <button
@@ -1009,8 +1052,7 @@ function DeviceScreenRouter({
             {/* Filter Toggle List */}
             <div className="flex flex-col gap-4">
               {[
-                { id: 'Safe at night', label: 'Safe at Night', desc: 'Restroom rating ≥ 3.5 & well-lit lot' },
-                { id: 'Open now', label: 'Open Now', desc: 'Active 24/7 service stations' },
+                { id: 'Safe at night', label: 'Safe at Night', desc: 'Hides stops rated gross' },
                 { id: 'Restroom indoor', label: 'Indoor Entrance Only', desc: 'Inside building lobby, not around the back' },
               ].map((opt) => {
                 const active = activeFilters.includes(opt.id);
@@ -1043,18 +1085,26 @@ function DeviceScreenRouter({
                 <span className="text-xs font-semibold text-slate-400">Minimum cleanliness tier</span>
                 <div className="grid grid-cols-3 gap-2 bg-[#070a13]/55 p-1 rounded-xl">
                   {['Any', '3.0★+', '4.0★+'].map((tier) => {
-                    const isSelected = (tier === 'Any' && !activeFilters.includes('Clean 4★+')) ||
-                                      (tier === '4.0★+' && activeFilters.includes('Clean 4★+'));
+                    const isSelected =
+                      (tier === 'Any' && !activeFilters.includes('Clean 3★+') && !activeFilters.includes('Clean 4★+')) ||
+                      (tier === '3.0★+' && activeFilters.includes('Clean 3★+') && !activeFilters.includes('Clean 4★+')) ||
+                      (tier === '4.0★+' && activeFilters.includes('Clean 4★+'));
                     return (
                       <button
                         key={tier}
                         onClick={() => {
-                          if (tier === '4.0★+') {
-                            if (!activeFilters.includes('Clean 4★+')) {
-                              setActiveFilters([...activeFilters, 'Clean 4★+']);
-                            }
+                          if (tier === '3.0★+') {
+                            setActiveFilters((prev) => [
+                              ...prev.filter((f) => f !== 'Clean 3★+' && f !== 'Clean 4★+'),
+                              'Clean 3★+',
+                            ]);
+                          } else if (tier === '4.0★+') {
+                            setActiveFilters((prev) => [
+                              ...prev.filter((f) => f !== 'Clean 3★+' && f !== 'Clean 4★+'),
+                              'Clean 4★+',
+                            ]);
                           } else {
-                            setActiveFilters(activeFilters.filter((f) => f !== 'Clean 4★+'));
+                            setActiveFilters((prev) => prev.filter((f) => f !== 'Clean 3★+' && f !== 'Clean 4★+'));
                           }
                         }}
                         className={`py-1.5 text-xs rounded-lg font-medium transition-all ${
@@ -1102,7 +1152,7 @@ function DeviceScreenRouter({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <div className="text-xs font-semibold">
-                Verification logged! +5 pts added to rank.
+                {toastMessage}
               </div>
             </div>
           )}
@@ -1125,8 +1175,6 @@ function DeviceScreenRouter({
               <h1 className="text-2xl font-display font-bold leading-tight">{currentStation.name}</h1>
               <div className={`flex items-center gap-2 mt-1.5 text-xs ${secondaryText}`}>
                 <span>📍 {currentStation.distance}</span>
-                <span>•</span>
-                <span className="text-green-500 font-semibold">Open Now</span>
               </div>
             </div>
 
@@ -1210,7 +1258,7 @@ function DeviceScreenRouter({
               <button
                 onClick={() => {
                   logAction(`Opening Google Maps direction to ${currentStation.name}`);
-                  window.open(`https://maps.google.com/?q=${encodeURIComponent(currentStation.name)}`, '_blank');
+                  window.open(`https://www.google.com/maps/dir/?api=1&destination=${currentStation.latitude},${currentStation.longitude}`, '_blank');
                 }}
                 className="w-full bg-[#378ADD] hover:bg-blue-700 text-white font-semibold py-3 rounded-2xl shadow-xl font-display cursor-pointer"
               >
@@ -1376,6 +1424,33 @@ function DeviceScreenRouter({
               <div className="w-6" />
             </div>
 
+            {/* Required verdict selector */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-semibold text-slate-400">Your verdict <span className="text-brand-coral">*</span></span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setTempRatingScore(5)}
+                  className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-all ${
+                    tempRatingScore === 5
+                      ? 'bg-[#1D9E75] border-[#1D9E75] text-white shadow-sm'
+                      : 'bg-[#1D9E75]/10 border-[#1D9E75]/35 text-[#1D9E75]'
+                  }`}
+                >
+                  CLEAN
+                </button>
+                <button
+                  onClick={() => setTempRatingScore(1.5)}
+                  className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-all ${
+                    tempRatingScore === 1.5
+                      ? 'bg-[#E24B4A] border-[#E24B4A] text-white shadow-sm'
+                      : 'bg-[#E24B4A]/10 border-[#E24B4A]/35 text-[#E24B4A]'
+                  }`}
+                >
+                  GROSS
+                </button>
+              </div>
+            </div>
+
             {/* Quick-tag chips selection */}
             <div className="flex flex-col gap-2">
               <span className="text-xs font-semibold text-slate-400">Quick Tags</span>
@@ -1444,7 +1519,10 @@ function DeviceScreenRouter({
           <div className="flex flex-col gap-2">
             <button
               onClick={handleSubmitDetailedRating}
-              className="w-full bg-[#1D9E75] hover:bg-[#15825f] text-white font-semibold py-3 rounded-2xl shadow-xl font-display cursor-pointer"
+              disabled={!tempRatingScore}
+              className={`w-full bg-[#1D9E75] text-white font-semibold py-3 rounded-2xl shadow-xl font-display transition-all ${
+                tempRatingScore ? 'hover:bg-[#15825f] cursor-pointer' : 'opacity-50 cursor-not-allowed'
+              }`}
             >
               Submit Detailed Review
             </button>
@@ -1522,11 +1600,53 @@ function DeviceScreenRouter({
       );
 
     // PROFILE 09
-    case '09_Profile':
+    case '09_Profile': {
+      // Derive "Member since" from createdAt
+      const memberSince = (() => {
+        if (!user.createdAt) return 'Member since recently';
+        const d = new Date(user.createdAt);
+        if (isNaN(d.getTime())) return 'Member since recently';
+        return `Member since ${d.toLocaleString('default', { month: 'long', year: 'numeric' })}`;
+      })();
+
+      // Achievement badges derived from real stats
+      const badges = [
+        {
+          name: 'First Flush',
+          unlocked: user.stationsRated >= 1,
+          icon: '🚽',
+          desc: 'Rate your first stop',
+        },
+        {
+          name: 'Loo Legend',
+          unlocked: user.stationsRated >= 10,
+          icon: '👑',
+          desc: 'Rate 10 stations',
+        },
+        {
+          name: 'Streak Star',
+          unlocked: user.streak >= 3,
+          icon: '⭐',
+          desc: '3-day rating streak',
+        },
+      ];
+
+      // Format relative time from ISO string
+      const formatRelativeTime = (isoStr: string): string => {
+        const diffMs = Date.now() - new Date(isoStr).getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMins / 60);
+        const diffDays = Math.floor(diffHours / 24);
+        if (diffDays >= 1) return `${diffDays}d ago`;
+        if (diffHours >= 1) return `${diffHours}h ago`;
+        if (diffMins >= 1) return `${diffMins}m ago`;
+        return 'Just now';
+      };
+
       return (
         <div className={`flex-1 flex flex-col justify-between pt-[max(env(safe-area-inset-top),16px)] pb-12 overflow-y-auto ${uiTheme}`}>
           <div className="p-4 flex flex-col gap-6">
-            
+
             {/* User Profile Header */}
             <div className="flex items-center gap-4 border-b border-slate-800/40 pb-4">
               <div className="w-16 h-16 bg-brand-coral/10 border border-brand-coral text-brand-coral rounded-full flex items-center justify-center font-display text-2xl font-bold uppercase shadow">
@@ -1534,7 +1654,7 @@ function DeviceScreenRouter({
               </div>
               <div>
                 <h2 className="text-lg font-display font-semibold">{user.username || 'Driver'}</h2>
-                <p className="text-xs text-slate-500 font-light">Member since June 2026</p>
+                <p className="text-xs text-slate-500 font-light">{memberSince}</p>
               </div>
             </div>
 
@@ -1562,11 +1682,7 @@ function DeviceScreenRouter({
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold text-slate-400">Achievement Badges</h3>
               <div className="flex gap-2 overflow-x-auto pb-1 select-none">
-                {[
-                  { name: 'Night Owl', unlocked: true, icon: '🦉', desc: 'Rated 5 stations after dark' },
-                  { name: 'Loo Legend', unlocked: true, icon: '👑', desc: 'Rated 25+ total stations' },
-                  { name: 'Avon Hero', unlocked: false, icon: '🛡️', desc: 'Be the top rater in Avon' },
-                ].map((badge) => (
+                {badges.map((badge) => (
                   <div
                     key={badge.name}
                     title={badge.desc}
@@ -1587,14 +1703,24 @@ function DeviceScreenRouter({
             <div className="flex flex-col gap-2">
               <h3 className="text-xs font-semibold text-slate-400">Your Recent Logs</h3>
               <div className="flex flex-col gap-2">
-                <div className={`p-3 rounded-xl text-xs font-light ${cardTheme}`}>
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="font-semibold">Chevron — Valley Boulevard</span>
-                    <span className="text-teal-400 font-bold font-mono">5.0★</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400">Verified clean restroom. Great well-lit parking lot.</p>
-                  <span className="text-[9px] text-slate-500 mt-1 block">Rated 2h ago</span>
-                </div>
+                {user.recentActivity.length === 0 ? (
+                  <p className={`text-xs italic text-center py-3 ${secondaryText}`}>
+                    No ratings yet — rate your first stop!
+                  </p>
+                ) : (
+                  user.recentActivity.map((entry, idx) => (
+                    <div key={idx} className={`p-3 rounded-xl text-xs font-light ${cardTheme}`}>
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="font-semibold truncate max-w-[200px]">{entry.stationName}</span>
+                        <span className={`font-bold font-mono ${entry.score >= 4 ? 'text-teal-400' : 'text-brand-coral'}`}>
+                          {entry.score}★
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">{entry.text}</p>
+                      <span className="text-[9px] text-slate-500 mt-1 block">Rated {formatRelativeTime(entry.ratedAt)}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 
@@ -1611,6 +1737,7 @@ function DeviceScreenRouter({
           <BottomTabBar activeTab="profile" navigateTo={navigateTo} />
         </div>
       );
+    }
 
     // EMPTY STATE: Unrated Station (10)
     case '10_EmptyState':

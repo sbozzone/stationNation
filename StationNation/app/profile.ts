@@ -5,6 +5,13 @@
 
 const PROFILE_KEY = 'stationnation.profile';
 
+export interface RecentActivityEntry {
+  stationName: string;
+  score: number;
+  text: string;
+  ratedAt: string; // ISO
+}
+
 export interface Profile {
   username: string;
   points: number;
@@ -13,6 +20,8 @@ export interface Profile {
   peopleHelped: number;
   lastRatedDay?: string;
   onboarded: boolean;
+  createdAt?: string; // ISO — set once on first save
+  recentActivity?: RecentActivityEntry[]; // last 10, newest first
 }
 
 const DEFAULT_PROFILE: Profile = {
@@ -23,6 +32,8 @@ const DEFAULT_PROFILE: Profile = {
   peopleHelped: 0,
   lastRatedDay: undefined,
   onboarded: false,
+  createdAt: undefined,
+  recentActivity: [],
 };
 
 /**
@@ -58,6 +69,8 @@ export function loadProfile(): Profile {
       peopleHelped: typeof parsed.peopleHelped === 'number' ? parsed.peopleHelped : DEFAULT_PROFILE.peopleHelped,
       lastRatedDay: typeof parsed.lastRatedDay === 'string' ? parsed.lastRatedDay : undefined,
       onboarded: typeof parsed.onboarded === 'boolean' ? parsed.onboarded : DEFAULT_PROFILE.onboarded,
+      createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : undefined,
+      recentActivity: Array.isArray(parsed.recentActivity) ? parsed.recentActivity : [],
     };
   } catch {
     return { ...DEFAULT_PROFILE };
@@ -66,12 +79,17 @@ export function loadProfile(): Profile {
 
 /**
  * Save the profile to localStorage.
+ * Sets createdAt to the current ISO timestamp if it is not already set.
  * No-op on SSR.
  */
 export function saveProfile(profile: Profile): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    const toSave: Profile = {
+      ...profile,
+      createdAt: profile.createdAt ?? new Date().toISOString(),
+    };
+    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(toSave));
   } catch {
     // Storage quota or private-mode errors — silently ignore.
   }
