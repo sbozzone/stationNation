@@ -43,6 +43,7 @@ export interface Station {
   id: string;
   name: string;
   distance: string;
+  distanceMiles?: number; // computed from real GPS coords when available
   cleanlinessTier: CleanlinessTier;
   score: number;
   ratingCount: number;
@@ -50,8 +51,8 @@ export interface Station {
   safetyBadges: SafetyBadge[];
   subRatings: SubRatings;
   reviews: Review[];
-  latitude: number; // percentage from top of map region (0-100)
-  longitude: number; // percentage from left of map region (0-100)
+  latitude: number; // real GPS latitude (NUMERIC 9,6) or 0-100 mock percentage
+  longitude: number; // real GPS longitude (NUMERIC 9,6) or 0-100 mock percentage
 }
 
 export type TransitionType =

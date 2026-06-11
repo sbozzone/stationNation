@@ -1,9 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ScreenId, Station, CleanlinessTier, SafetyBadge, Review, TransitionType } from './types';
 import { mockStations } from './mockData';
 import { fetchStations, submitReview } from '../lib/data';
+import { loadProfile, saveProfile, deriveInitials, computeNewStreak, type Profile } from './profile';
+import { useGeolocation, haversineDistanceMiles, formatDistanceMiles, type GeoCoords } from './useGeolocation';
 
 // Confetti particle generator helper
 interface ConfettiParticle {
@@ -39,29 +41,33 @@ export default function Home() {
   const [tempRatingPhoto, setTempRatingPhoto] = useState<boolean>(false);
   const [showToast, setShowToast] = useState<boolean>(false);
   
-  // User Profile State
-  const [username, setUsername] = useState<string>('DriverAlpha');
-  const [points, setPoints] = useState<number>(1240);
-  const [streak, setStreak] = useState<number>(3);
-  const [stationsRated, setStationsRated] = useState<number>(47);
-  const [peopleHelped, setPeopleHelped] = useState<number>(132);
-  const [cityRank, setCityRank] = useState<number>(3);
+  // User Profile State — initialised to zero/blank; loaded from localStorage in the mount effect below.
+  const [username, setUsername] = useState<string>('');
+  const [points, setPoints] = useState<number>(0);
+  const [streak, setStreak] = useState<number>(0);
+  const [stationsRated, setStationsRated] = useState<number>(0);
+  const [peopleHelped, setPeopleHelped] = useState<number>(0);
+  const [lastRatedDay, setLastRatedDay] = useState<string | undefined>(undefined);
+  // profileReady: true once the mount effect has run (avoids a flash of the splash screen before we know if onboarding was completed).
+  const [profileReady, setProfileReady] = useState<boolean>(false);
+  // Temp nickname captured during the 01c_Avatar onboarding step (separate from committed username).
+  const [onboardingNickname, setOnboardingNickname] = useState<string>('');
   
-  // Simulator Controls State
-  const [safeAtNightMode, setSafeAtNightMode] = useState<boolean>(true); // Night ink background inside device
-  const [showGridOverlay, setShowGridOverlay] = useState<boolean>(false);
-  const [showSpecPanel, setShowSpecPanel] = useState<boolean>(true);
+  // Theme / UX State
+  const [safeAtNightMode] = useState<boolean>(true); // Night ink background
   const [confetti, setConfetti] = useState<ConfettiParticle[]>([]);
-  const [simLog, setSimLog] = useState<string[]>([
-    'System: Station Nation Simulator initialized.',
-    'System: Current user: DriverAlpha · Streak: 3 days · Points: 1240.'
-  ]);
   const [mapRecenterTrigger, setMapRecenterTrigger] = useState<number>(0);
 
-  // Quick helper to log actions
-  const logAction = (msg: string) => {
-    setSimLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 19)]);
-  };
+  // Geolocation
+  const { coords: userCoords, status: geoStatus, requestLocation } = useGeolocation();
+
+  // Container ref for confetti bounds
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // No-op action logger (call sites preserved, logs to console only)
+  const logAction = useCallback((msg: string) => {
+    console.log(`[StationNation] ${msg}`);
+  }, []);
 
   // Find active station details
   const activeStation = stations.find((s) => s.id === selectedStationId) || stations[0];
@@ -78,11 +84,14 @@ export default function Home() {
   const triggerConfetti = () => {
     const colors = ['#1D9E75', '#D85A30', '#378ADD', '#BA7517', '#E24B4A', '#F7F5F0', '#FCD34D'];
     const newConfetti: ConfettiParticle[] = [];
+    const rect = containerRef.current?.getBoundingClientRect();
+    const cx = rect ? rect.width / 2 : 196;
+    const cy = rect ? rect.height * 0.47 : 400;
     for (let i = 0; i < 40; i++) {
       newConfetti.push({
         id: Math.random() + i,
-        x: 196, // center of screen width
-        y: 400, // center height
+        x: cx,
+        y: cy,
         color: colors[Math.floor(Math.random() * colors.length)],
         angle: Math.random() * 360,
         speed: 3 + Math.random() * 8,
@@ -96,6 +105,8 @@ export default function Home() {
   // Animate Confetti
   useEffect(() => {
     if (confetti.length === 0) return;
+    const containerHeight = containerRef.current?.getBoundingClientRect().height ?? 852;
+    const containerWidth = containerRef.current?.getBoundingClientRect().width ?? 393;
     const interval = setInterval(() => {
       setConfetti((prev) =>
         prev
@@ -106,11 +117,50 @@ export default function Home() {
             speed: p.speed * 0.96, // Drag
             rotation: p.rotation + 4,
           }))
-          .filter((p) => p.y < 852 && p.x > 0 && p.x < 393)
+          .filter((p) => p.y < containerHeight && p.x > 0 && p.x < containerWidth)
       );
     }, 16);
     return () => clearInterval(interval);
   }, [confetti]);
+
+  // Load profile from localStorage on mount (client-only, guard SSR).
+  useEffect(() => {
+    const profile = loadProfile();
+    setUsername(profile.username);
+    setPoints(profile.points);
+    setStreak(profile.streak);
+    setStationsRated(profile.stationsRated);
+    setPeopleHelped(profile.peopleHelped);
+    setLastRatedDay(profile.lastRatedDay);
+    if (profile.onboarded) {
+      // Skip onboarding — go straight to the main map/list screen.
+      setActiveScreen('03_MapHome');
+      // Returning user: request location immediately (Permissions API may resolve silently
+      // if already granted, otherwise the hook does nothing until the user acts).
+      requestLocation();
+    }
+    setProfileReady(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist profile whenever any tracked stat changes (skip until profile is loaded).
+  useEffect(() => {
+    if (!profileReady) return;
+    const profile: Profile = {
+      username,
+      points,
+      streak,
+      stationsRated,
+      peopleHelped,
+      lastRatedDay,
+      onboarded: activeScreen !== '00_Splash' &&
+                 activeScreen !== '01a_Intro' &&
+                 activeScreen !== '01b_Location' &&
+                 activeScreen !== '01c_Avatar',
+    };
+    saveProfile(profile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username, points, streak, stationsRated, peopleHelped, lastRatedDay, profileReady, activeScreen]);
 
   // Load stations from Supabase on mount
   useEffect(() => {
@@ -127,6 +177,30 @@ export default function Home() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useDemoMode]);
+
+  // Enrich stations with computed distances whenever raw stations or user coords change.
+  // Produces nearest-first sorted list; falls back to DB order + raw distance text when
+  // coords are unavailable.
+  const enrichedStations = useMemo<Station[]>(() => {
+    if (!userCoords) {
+      // No location: return as-is, ensuring distance shows DB value or "—"
+      return stations.map((s) => ({
+        ...s,
+        distance: s.distance || '—',
+      }));
+    }
+    const withDist = stations.map((s) => {
+      const miles = haversineDistanceMiles(userCoords.lat, userCoords.lng, s.latitude, s.longitude);
+      return {
+        ...s,
+        distanceMiles: miles,
+        distance: formatDistanceMiles(miles),
+      };
+    });
+    // Sort nearest first
+    withDist.sort((a, b) => (a.distanceMiles ?? 0) - (b.distanceMiles ?? 0));
+    return withDist;
+  }, [stations, userCoords]);
 
   // Handle Clean/Gross voting action (2-Tap core)
   const handleRatingVote = (isClean: boolean) => {
@@ -153,10 +227,11 @@ export default function Home() {
           else if (newAvgScore < 2.5) newTier = 'gross';
 
           // Add a review
+          const initials = deriveInitials(username);
           const newReview: Review = {
             id: `rev-user-${Date.now()}`,
             username: username,
-            avatarInitials: username.slice(0, 2).toUpperCase(),
+            avatarInitials: initials,
             timestamp: 'Just now',
             text: isClean ? 'Confirmed clean! Fast and clean stop.' : 'Disgusting conditions, avoid if possible!',
             score: isClean ? 5 : 1.5,
@@ -185,11 +260,15 @@ export default function Home() {
       })
     );
 
-    // Apply points & stats
+    // Apply points & stats; update streak using day-based logic
     setPoints((p) => p + 10);
-    setStreak((s) => s + 1);
     setStationsRated((sr) => sr + 1);
     setPeopleHelped((ph) => ph + 12);
+    setStreak((currentStreak) => {
+      const { newStreak, newLastRatedDay } = computeNewStreak(currentStreak, lastRatedDay);
+      setLastRatedDay(newLastRatedDay);
+      return newStreak;
+    });
     logAction('Points earned: +10 pts! Streak increased! Station score updated.');
 
     triggerConfetti();
@@ -212,10 +291,11 @@ export default function Home() {
           if (newAvgScore >= 4.0) newTier = 'clean';
           else if (newAvgScore < 2.5) newTier = 'gross';
 
+          const initials = deriveInitials(username);
           const newReview: Review = {
             id: `rev-user-${Date.now()}`,
             username: username,
-            avatarInitials: username.slice(0, 2).toUpperCase(),
+            avatarInitials: initials,
             timestamp: 'Just now',
             text: tempRatingNotes || (isClean ? 'Clean and tidy.' : 'Needs servicing soon.'),
             score: tempRatingScore || 4,
@@ -245,9 +325,13 @@ export default function Home() {
     );
 
     setPoints((p) => p + 10);
-    setStreak((s) => s + 1);
     setStationsRated((sr) => sr + 1);
     setPeopleHelped((ph) => ph + 12);
+    setStreak((currentStreak) => {
+      const { newStreak, newLastRatedDay } = computeNewStreak(currentStreak, lastRatedDay);
+      setLastRatedDay(newLastRatedDay);
+      return newStreak;
+    });
     logAction('Detailed review submitted! +10 pts earned.');
 
     triggerConfetti();
@@ -333,25 +417,8 @@ export default function Home() {
     }, 3000);
   };
 
-  // Reset entire simulator back to onboarding
-  const handleResetSimulator = () => {
-    setStations(useDemoMode ? mockStations : []);
-    setSelectedStationId('chevron-valley');
-    resetRatingFlow();
-    setUsername('DriverAlpha');
-    setPoints(1240);
-    setStreak(3);
-    setStationsRated(47);
-    setPeopleHelped(132);
-    setCityRank(3);
-    setActiveScreen('01a_Intro');
-    setPrevScreen(null);
-    setTransitionType('dissolve');
-    logAction('Simulator fully reset to Onboarding intro.');
-  };
-
-  // Filters calculation
-  const filteredStations = stations.filter((station) => {
+  // Filters calculation (applied on top of enriched, distance-sorted stations)
+  const filteredStations = enrichedStations.filter((station) => {
     // If search text is present
     if (searchQuery && !station.name.toLowerCase().includes(searchQuery.toLowerCase())) {
       return false;
@@ -374,41 +441,14 @@ export default function Home() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#060F24] select-none font-sans">
-      {/* Ambient glow behind phone */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-[#1A52B5]/20 rounded-full blur-[120px] pointer-events-none" />
-
-      {/* Phone shell */}
-      <div className="relative w-[393px] h-[852px] rounded-[48px] border-[10px] border-[#1e293b] shadow-[0_40px_80px_-20px_rgba(0,0,0,0.9)] bg-slate-900 overflow-hidden flex flex-col">
-
-        {/* Dynamic Island */}
-        <div className="absolute top-[11px] left-1/2 -translate-x-1/2 w-[110px] h-[30px] bg-black rounded-full z-[999]" />
-
-        {/* Status Bar */}
-        <div className={`absolute top-0 left-0 right-0 h-[59px] px-8 pt-3 flex items-center justify-between z-[998] text-xs font-semibold ${
-          safeAtNightMode && activeScreen !== '01a_Intro' && activeScreen !== '01b_Location' && activeScreen !== '01c_Avatar'
-            ? 'text-slate-100 bg-[#1B2A4A]/50 backdrop-blur-sm'
-            : 'text-slate-900 bg-white/50 backdrop-blur-sm'
-        }`}>
-          <span>15:47</span>
-          <div className="flex items-center gap-1.5">
-            <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-              <rect x="2" y="18" width="3" height="4" rx="0.5" />
-              <rect x="7" y="14" width="3" height="8" rx="0.5" />
-              <rect x="12" y="10" width="3" height="12" rx="0.5" />
-              <rect x="17" y="5" width="3" height="17" rx="0.5" />
-            </svg>
-            <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-              <path d="M12 21a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm-8.8-8.8A12 12 0 0 1 12 6c3.2 0 6.2 1.3 8.3 3.4l-1.4 1.4A10 10 0 0 0 12 8a10 10 0 0 0-6.9 2.8l-1.4-1.4zm2.8 2.8A8 8 0 0 1 12 10c2.2 0 4.2.9 5.7 2.4l-1.4 1.4A6 6 0 0 0 12 12a6 6 0 0 0-4.3 1.8l-1.4-1.4z" />
-            </svg>
-            <div className="w-5 h-2.5 border border-current rounded-sm p-0.5 flex items-center">
-              <div className="h-full w-4 bg-current rounded-2xs" />
-            </div>
-          </div>
-        </div>
-
+      {/* App container: full viewport on mobile, phone-width on desktop */}
+      <div
+        ref={containerRef}
+        className="relative w-full max-w-[430px] h-[100dvh] mx-auto bg-slate-900 overflow-hidden flex flex-col"
+      >
         {/* Demo Mode badge */}
         {useDemoMode && (
-          <div className="absolute top-[64px] left-1/2 -translate-x-1/2 z-[997] pointer-events-none">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[997] pointer-events-none">
             <span className="px-2.5 py-1 rounded-full bg-amber-400 text-slate-900 text-[10px] font-bold uppercase tracking-wider shadow-lg">
               Demo Mode
             </span>
@@ -444,11 +484,11 @@ export default function Home() {
             prevScreen={prevScreen}
             transitionType={transitionType}
             stations={filteredStations}
-            allStations={stations}
+            allStations={enrichedStations}
             selectedStationId={selectedStationId}
             setSelectedStationId={(id) => {
               setSelectedStationId(id);
-              const st = stations.find(s => s.id === id);
+              const st = enrichedStations.find(s => s.id === id);
               if (st && st.cleanlinessTier === 'unrated') {
                 navigateTo('10_EmptyState', 'push-up');
               } else {
@@ -463,8 +503,10 @@ export default function Home() {
             showFiltersModal={showFiltersModal}
             setShowFiltersModal={setShowFiltersModal}
             safeAtNightMode={safeAtNightMode}
-            user={{ username, points, streak, stationsRated, peopleHelped, cityRank }}
+            user={{ username, points, streak, stationsRated, peopleHelped }}
             setUsername={setUsername}
+            onboardingNickname={onboardingNickname}
+            setOnboardingNickname={setOnboardingNickname}
             handleRatingVote={handleRatingVote}
             tempRatingTags={tempRatingTags}
             setTempRatingTags={setTempRatingTags}
@@ -480,18 +522,11 @@ export default function Home() {
             mapRecenterTrigger={mapRecenterTrigger}
             setMapRecenterTrigger={setMapRecenterTrigger}
             logAction={logAction}
+            userCoords={userCoords}
+            geoStatus={geoStatus}
+            requestLocation={requestLocation}
           />
         </div>
-
-        {/* Bottom Home Indicator */}
-        <div className="absolute bottom-0 left-0 right-0 h-[34px] z-[998] flex items-center justify-center pointer-events-none">
-          <div className={`w-[134px] h-[5px] rounded-full ${
-            safeAtNightMode && activeScreen !== '01a_Intro' && activeScreen !== '01b_Location' && activeScreen !== '01c_Avatar'
-              ? 'bg-white/40'
-              : 'bg-neutral-800/40'
-          }`} />
-        </div>
-
       </div>
     </div>
   );
@@ -520,9 +555,10 @@ interface ScreenRouterProps {
     streak: number;
     stationsRated: number;
     peopleHelped: number;
-    cityRank: number;
   };
   setUsername: (name: string) => void;
+  onboardingNickname: string;
+  setOnboardingNickname: (name: string) => void;
   handleRatingVote: (isClean: boolean) => void;
   tempRatingTags: string[];
   setTempRatingTags: React.Dispatch<React.SetStateAction<string[]>>;
@@ -538,6 +574,9 @@ interface ScreenRouterProps {
   mapRecenterTrigger: number;
   setMapRecenterTrigger: React.Dispatch<React.SetStateAction<number>>;
   logAction: (msg: string) => void;
+  userCoords: GeoCoords | null;
+  geoStatus: string;
+  requestLocation: () => void;
 }
 
 function DeviceScreenRouter({
@@ -556,6 +595,8 @@ function DeviceScreenRouter({
   safeAtNightMode,
   user,
   setUsername,
+  onboardingNickname,
+  setOnboardingNickname,
   handleRatingVote,
   tempRatingTags,
   setTempRatingTags,
@@ -571,6 +612,9 @@ function DeviceScreenRouter({
   mapRecenterTrigger,
   setMapRecenterTrigger,
   logAction,
+  userCoords,
+  geoStatus,
+  requestLocation,
 }: ScreenRouterProps) {
   
   // Quick Tag toggle helper
@@ -582,7 +626,7 @@ function DeviceScreenRouter({
 
   const currentStation = allStations.find((s) => s.id === selectedStationId) || allStations[0];
 
-  // Helper theme classes inside phone simulator
+  // Helper theme classes
   const uiTheme = safeAtNightMode
     ? 'bg-[#1B2A4A] text-slate-100' // Night Ink palette
     : 'bg-[#F7F5F0] text-neutral-900'; // Off-white palette
@@ -655,7 +699,7 @@ function DeviceScreenRouter({
     // ONBOARDING 01a INTRO
     case '01a_Intro':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-gradient-to-b from-[#1A52B5] to-[#0D2255] p-6 text-white pt-24 pb-12 select-none h-full">
+        <div className="flex-1 flex flex-col justify-between bg-gradient-to-b from-[#1A52B5] to-[#0D2255] p-6 text-white pt-[max(env(safe-area-inset-top),24px)] pb-12 select-none h-full">
           <div className="flex flex-col items-center text-center mt-12">
             {/* Logo */}
             <div className="w-20 h-20 bg-white/10 rounded-2xl border border-white/20 flex items-center justify-center shadow-2xl mb-8">
@@ -695,7 +739,7 @@ function DeviceScreenRouter({
     // ONBOARDING 01b LOCATION
     case '01b_Location':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-24 pb-12 h-full">
+        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-[max(env(safe-area-inset-top),24px)] pb-12 h-full">
           <div className="flex flex-col items-center text-center mt-12">
             <div className="w-16 h-16 bg-[#1A52B5]/30 rounded-full flex items-center justify-center text-[#5B9BD5] mb-6">
               <svg className="w-8 h-8 animate-bounce" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -713,7 +757,10 @@ function DeviceScreenRouter({
 
           <div className="flex flex-col gap-3">
             <button
-              onClick={() => navigateTo('01c_Avatar', 'push-left')}
+              onClick={() => {
+                requestLocation();
+                navigateTo('01c_Avatar', 'push-left');
+              }}
               className="w-full bg-[#378ADD] hover:bg-blue-700 text-white font-semibold py-3 rounded-2xl shadow-lg font-display cursor-pointer"
             >
               Allow location
@@ -729,19 +776,21 @@ function DeviceScreenRouter({
       );
 
     // ONBOARDING 01c AVATAR
-    case '01c_Avatar':
+    case '01c_Avatar': {
+      const previewInitials = deriveInitials(onboardingNickname);
+      const nicknameValid = onboardingNickname.trim().length > 0;
       return (
-        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-24 pb-12 h-full">
+        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-[max(env(safe-area-inset-top),24px)] pb-12 h-full">
           <div className="flex flex-col items-center mt-6">
             <span className="text-xs font-semibold text-[#5B9BD5] uppercase tracking-widest mb-2">Step 3 of 3</span>
             <h2 className="text-2xl font-display font-semibold text-slate-100 text-center mb-6">
               Create your profile
             </h2>
-            
-            {/* Pick Avatar Placeholder */}
+
+            {/* Avatar preview — shows derived initials live as the user types */}
             <div className="relative group mb-6">
               <div className="w-24 h-24 bg-[#D85A30]/10 border-2 border-brand-coral text-brand-coral rounded-full flex items-center justify-center font-display text-3xl font-bold uppercase shadow-lg shadow-coral-950/20">
-                {user.username ? user.username.slice(0, 2).toUpperCase() : 'DA'}
+                {nicknameValid ? previewInitials : '??'}
               </div>
               <div className="absolute -bottom-1 -right-1 bg-slate-800 text-slate-300 p-1.5 rounded-full border border-slate-700">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -750,16 +799,22 @@ function DeviceScreenRouter({
                 </svg>
               </div>
             </div>
-            
+
             <div className="w-full flex flex-col gap-2">
-              <label className="text-xs font-semibold text-slate-400">Choose your username</label>
+              <label className="text-xs font-semibold text-slate-400">Choose your nickname</label>
               <input
                 type="text"
-                value={user.username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Choose a username"
+                value={onboardingNickname}
+                onChange={(e) => setOnboardingNickname(e.target.value)}
+                maxLength={20}
+                placeholder="e.g. Road Runner"
                 className="w-full bg-[#0a1a42] text-white font-sans text-base px-4 py-3 rounded-2xl border border-[#1A52B5]/60 outline-none focus:border-[#5B9BD5] transition-all shadow-inner"
               />
+              {!nicknameValid && (
+                <span className="text-xs text-brand-coral font-semibold mt-0.5">
+                  Pick a nickname to continue.
+                </span>
+              )}
               <span className="text-xs text-slate-500 font-light italic mt-1">
                 🔒 Your real name stays private to protect safety.
               </span>
@@ -767,20 +822,30 @@ function DeviceScreenRouter({
           </div>
 
           <button
-            onClick={() => navigateTo('03_MapHome', 'dissolve')}
-            className="w-full bg-[#1A52B5] hover:bg-[#1645A0] text-white font-semibold py-3 rounded-2xl shadow-xl font-display cursor-pointer border border-[#5B9BD5]/30"
+            disabled={!nicknameValid}
+            onClick={() => {
+              const trimmed = onboardingNickname.trim();
+              setUsername(trimmed);
+              navigateTo('03_MapHome', 'dissolve');
+            }}
+            className={`w-full text-white font-semibold py-3 rounded-2xl shadow-xl font-display border border-[#5B9BD5]/30 transition-all ${
+              nicknameValid
+                ? 'bg-[#1A52B5] hover:bg-[#1645A0] cursor-pointer'
+                : 'bg-[#1A52B5]/40 cursor-not-allowed opacity-50'
+            }`}
           >
             Start exploring
           </button>
         </div>
       );
+    }
 
     // MAP HOME 03
     case '03_MapHome':
       return (
         <div className={`flex-1 flex flex-col h-full overflow-hidden ${uiTheme}`}>
           {/* Top Search Bar (y≈59) */}
-          <div className={`p-4 pt-16 flex flex-col gap-2.5 z-10 ${borderTheme} border-b ${safeAtNightMode ? 'bg-[#1B2A4A]/90' : 'bg-white/95'} backdrop-blur`}>
+          <div className={`p-4 pt-[max(env(safe-area-inset-top),16px)] flex flex-col gap-2.5 z-10 ${borderTheme} border-b ${safeAtNightMode ? 'bg-[#1B2A4A]/90' : 'bg-white/95'} backdrop-blur`}>
             <div className="relative">
               <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -836,7 +901,7 @@ function DeviceScreenRouter({
           {/* Map Region (y≈143 -> ~620) */}
           <div className="flex-1 relative bg-[#e2dec9] overflow-hidden">
             {/* Friendly Game Board stylized map design */}
-            <GameMapSVG stations={stations} selectedStationId={selectedStationId} onPinSelect={setSelectedStationId} mapRecenterTrigger={mapRecenterTrigger} />
+            <GameMapSVG stations={stations} selectedStationId={selectedStationId} onPinSelect={setSelectedStationId} mapRecenterTrigger={mapRecenterTrigger} userCoords={userCoords} />
 
             {/* Floating Recenter Button bottom-right */}
             <button
@@ -862,6 +927,11 @@ function DeviceScreenRouter({
             <h3 className="text-sm font-display font-semibold tracking-tight text-slate-400 mb-2 uppercase tracking-widest text-center">
               Nearest clean stops
             </h3>
+            {(geoStatus === 'denied' || geoStatus === 'unavailable') && (
+              <p className="text-[10px] text-slate-500 text-center mb-2 italic">
+                Enable location for real distances
+              </p>
+            )}
             
             {/* List cards (visible at peek) */}
             <div className="flex flex-col gap-2 max-h-48 overflow-y-auto pr-1">
@@ -1023,7 +1093,7 @@ function DeviceScreenRouter({
     // STATION DETAIL 05
     case '05_StationDetail':
       return (
-        <div className={`flex-1 flex flex-col h-full overflow-y-auto pt-16 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col h-full overflow-y-auto pt-[max(env(safe-area-inset-top),16px)] pb-12 ${uiTheme}`}>
           
           {/* Refreshness success Toast */}
           {showToast && (
@@ -1216,7 +1286,7 @@ function DeviceScreenRouter({
     // RATE STEP 1: Two-tap core loop (06)
     case '06_Rate_Step1':
       return (
-        <div className={`flex-1 flex flex-col justify-between p-6 pt-24 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between p-6 pt-[max(env(safe-area-inset-top),24px)] pb-12 ${uiTheme}`}>
           <div className="flex flex-col gap-6">
             {/* Header / Title */}
             <div className="text-center">
@@ -1293,7 +1363,7 @@ function DeviceScreenRouter({
     // RATE STEP 2: Optional details (07)
     case '07_Rate_Step2':
       return (
-        <div className={`flex-1 flex flex-col justify-between p-5 pt-16 pb-10 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between p-5 pt-[max(env(safe-area-inset-top),16px)] pb-10 ${uiTheme}`}>
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between border-b border-slate-800/40 pb-2">
               <button
@@ -1394,7 +1464,7 @@ function DeviceScreenRouter({
     // RATE CONFIRM 08 (Confetti overlay, Streak + points tick up)
     case '08_Rate_Confirm':
       return (
-        <div className={`flex-1 flex flex-col justify-between p-6 pt-24 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between p-6 pt-[max(env(safe-area-inset-top),24px)] pb-12 ${uiTheme}`}>
           <div className="flex flex-col items-center text-center mt-12">
             
             {/* Green Check Icon */}
@@ -1433,7 +1503,7 @@ function DeviceScreenRouter({
               </span>
               <p className="text-xs text-slate-300 font-light leading-relaxed">
                 You helped <strong className="text-white font-semibold">{user.peopleHelped} people</strong> this week.
-                You are currently <strong className="text-brand-teal font-semibold">#{user.cityRank} in Avon</strong>!
+                Keep it up — you&apos;re making the road safer for everyone!
               </p>
             </div>
 
@@ -1454,16 +1524,16 @@ function DeviceScreenRouter({
     // PROFILE 09
     case '09_Profile':
       return (
-        <div className={`flex-1 flex flex-col justify-between pt-16 pb-12 overflow-y-auto ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between pt-[max(env(safe-area-inset-top),16px)] pb-12 overflow-y-auto ${uiTheme}`}>
           <div className="p-4 flex flex-col gap-6">
             
             {/* User Profile Header */}
             <div className="flex items-center gap-4 border-b border-slate-800/40 pb-4">
               <div className="w-16 h-16 bg-brand-coral/10 border border-brand-coral text-brand-coral rounded-full flex items-center justify-center font-display text-2xl font-bold uppercase shadow">
-                {user.username.slice(0, 2)}
+                {deriveInitials(user.username)}
               </div>
               <div>
-                <h2 className="text-lg font-display font-semibold">{user.username}</h2>
+                <h2 className="text-lg font-display font-semibold">{user.username || 'Driver'}</h2>
                 <p className="text-xs text-slate-500 font-light">Member since June 2026</p>
               </div>
             </div>
@@ -1472,7 +1542,7 @@ function DeviceScreenRouter({
             <div className="grid grid-cols-2 gap-3">
               {[
                 { label: 'Total Points', val: `${user.points} pts`, icon: '💎' },
-                { label: 'City Rank', val: `#${user.cityRank} Avon`, icon: '🏆' },
+                { label: 'City Rank', val: '—', icon: '🏆' },
                 { label: 'Stations Rated', val: `${user.stationsRated} stops`, icon: '⭐' },
                 { label: 'People Helped', val: `${user.peopleHelped} drivers`, icon: '🤝' },
               ].map((stat) => (
@@ -1545,7 +1615,7 @@ function DeviceScreenRouter({
     // EMPTY STATE: Unrated Station (10)
     case '10_EmptyState':
       return (
-        <div className={`flex-1 flex flex-col justify-between pt-16 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between pt-[max(env(safe-area-inset-top),16px)] pb-12 ${uiTheme}`}>
           {/* Header */}
           <div className={`px-4 py-3 flex items-center justify-between border-b ${borderTheme}`}>
             <button
@@ -1602,7 +1672,7 @@ function DeviceScreenRouter({
 // Bottom tab bar reusable component inside phone (56px size)
 function BottomTabBar({ activeTab, navigateTo }: { activeTab: 'map' | 'profile'; navigateTo: any }) {
   return (
-    <div className="absolute bottom-[34px] left-0 right-0 h-[56px] bg-slate-900 border-t border-slate-800 flex items-center justify-between px-10 z-[990]">
+    <div className="absolute bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex items-center justify-between px-10 z-[990]" style={{ paddingBottom: 'env(safe-area-inset-bottom)', minHeight: '56px' }}>
       {/* Map Tab */}
       <button
         onClick={() => navigateTo('03_MapHome', 'instant')}
@@ -1641,17 +1711,89 @@ function BottomTabBar({ activeTab, navigateTo }: { activeTab: 'map' | 'profile';
   );
 }
 
+// SVG viewport dimensions
+const MAP_W = 361;
+const MAP_H = 477;
+
+/**
+ * Compute a bounding box over all station lat/lng values plus optional user coords.
+ * Returns { minLat, maxLat, minLng, maxLng } padded ~10%.
+ * Handles 0-station and 1-station edge cases gracefully.
+ */
+function computeBBox(
+  stations: Station[],
+  userCoords: GeoCoords | null
+): { minLat: number; maxLat: number; minLng: number; maxLng: number } {
+  const pts: { lat: number; lng: number }[] = stations.map((s) => ({
+    lat: s.latitude,
+    lng: s.longitude,
+  }));
+  if (userCoords) {
+    pts.push({ lat: userCoords.lat, lng: userCoords.lng });
+  }
+
+  if (pts.length === 0) {
+    // Empty: return a sensible default centred on 0,0
+    return { minLat: -1, maxLat: 1, minLng: -1, maxLng: 1 };
+  }
+
+  let minLat = pts[0].lat, maxLat = pts[0].lat;
+  let minLng = pts[0].lng, maxLng = pts[0].lng;
+  for (const p of pts) {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  }
+
+  // For single-point (or very close points), spread a small area so the pin doesn't
+  // land exactly on the edge.
+  const latSpan = maxLat - minLat || 0.02;
+  const lngSpan = maxLng - minLng || 0.02;
+
+  const padLat = latSpan * 0.15;
+  const padLng = lngSpan * 0.15;
+
+  return {
+    minLat: minLat - padLat,
+    maxLat: maxLat + padLat,
+    minLng: minLng - padLng,
+    maxLng: maxLng + padLng,
+  };
+}
+
+/**
+ * Project a lat/lng into SVG pixel coordinates within the viewport.
+ * Latitude increases upward (north), so we invert Y.
+ */
+function project(
+  lat: number,
+  lng: number,
+  bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number }
+): { x: number; y: number } {
+  const latRange = bbox.maxLat - bbox.minLat || 1;
+  const lngRange = bbox.maxLng - bbox.minLng || 1;
+
+  const x = ((lng - bbox.minLng) / lngRange) * MAP_W;
+  // Invert Y: higher lat = lower pixel Y (north = up)
+  const y = ((bbox.maxLat - lat) / latRange) * MAP_H;
+
+  return { x, y };
+}
+
 // Custom vector stylized game-board map simulator using SVG
 function GameMapSVG({
   stations,
   selectedStationId,
   onPinSelect,
   mapRecenterTrigger,
+  userCoords,
 }: {
   stations: Station[];
   selectedStationId: string;
   onPinSelect: (id: string) => void;
   mapRecenterTrigger: number;
+  userCoords: GeoCoords | null;
 }) {
   const [mapScale, setMapScale] = useState(1);
   const [panX, setPanX] = useState(0);
@@ -1664,6 +1806,23 @@ function GameMapSVG({
     setPanY(0);
   }, [mapRecenterTrigger]);
 
+  // Compute bounding box and projections
+  const bbox = useMemo(() => computeBBox(stations, userCoords), [stations, userCoords]);
+
+  const stationPins = useMemo(
+    () =>
+      stations.map((st) => ({
+        ...st,
+        ...project(st.latitude, st.longitude, bbox),
+      })),
+    [stations, bbox]
+  );
+
+  const userPin = useMemo(
+    () => (userCoords ? project(userCoords.lat, userCoords.lng, bbox) : null),
+    [userCoords, bbox]
+  );
+
   return (
     <div className="w-full h-full relative cursor-grab active:cursor-grabbing select-none overflow-hidden bg-[#E5E1D3]">
       <svg
@@ -1671,53 +1830,59 @@ function GameMapSVG({
         style={{
           transform: `scale(${mapScale}) translate(${panX}px, ${panY}px)`,
         }}
-        viewBox="0 0 361 477"
+        viewBox={`0 0 ${MAP_W} ${MAP_H}`}
         xmlns="http://www.w3.org/2000/svg"
       >
-        {/* River background styling */}
+        {/* Map background: subtle terrain colours */}
+        <rect x="0" y="0" width={MAP_W} height={MAP_H} fill="#E5E1D3" />
+
+        {/* Decorative river — scaled to viewBox */}
         <path
-          d="M-20 200 Q 100 220 180 310 T 380 320"
+          d={`M-20 ${MAP_H * 0.42} Q ${MAP_W * 0.28} ${MAP_H * 0.46} ${MAP_W * 0.5} ${MAP_H * 0.65} T ${MAP_W + 20} ${MAP_H * 0.67}`}
           fill="none"
           stroke="#93C5FD"
           strokeWidth="35"
           strokeLinecap="round"
-          opacity="0.85"
+          opacity="0.7"
         />
-        
-        {/* Winding pathways / roads */}
-        {/* Road 1: Valley Blvd */}
-        <line x1="-10" y1="120" x2="380" y2="120" stroke="#FAF8F5" strokeWidth="24" strokeLinecap="round" />
-        <line x1="-10" y1="120" x2="380" y2="120" stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
-        <text x="20" y="112" fill="#9CA3AF" fontSize="8" fontWeight="bold" fontFamily="sans-serif">VALLEY BLVD</text>
 
-        {/* Road 2: Route 9 */}
-        <line x1="160" y1="-10" x2="160" y2="500" stroke="#FAF8F5" strokeWidth="20" strokeLinecap="round" />
-        <line x1="160" y1="-10" x2="160" y2="500" stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
-        <text x="168" y="240" fill="#9CA3AF" fontSize="8" fontWeight="bold" transform="rotate(90 168 240)" fontFamily="sans-serif">ROUTE 9</text>
+        {/* Decorative roads */}
+        <line x1="-10" y1={MAP_H * 0.25} x2={MAP_W + 10} y2={MAP_H * 0.25} stroke="#FAF8F5" strokeWidth="22" strokeLinecap="round" />
+        <line x1="-10" y1={MAP_H * 0.25} x2={MAP_W + 10} y2={MAP_H * 0.25} stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
 
-        {/* Road 3: Crossing Ave */}
-        <line x1="-10" y1="360" x2="380" y2="360" stroke="#FAF8F5" strokeWidth="22" strokeLinecap="round" />
-        <line x1="-10" y1="360" x2="380" y2="360" stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
-        <text x="240" y="352" fill="#9CA3AF" fontSize="8" fontWeight="bold" fontFamily="sans-serif">CROSSING AVE</text>
+        <line x1={MAP_W * 0.44} y1="-10" x2={MAP_W * 0.44} y2={MAP_H + 10} stroke="#FAF8F5" strokeWidth="18" strokeLinecap="round" />
+        <line x1={MAP_W * 0.44} y1="-10" x2={MAP_W * 0.44} y2={MAP_H + 10} stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
 
-        {/* Green Parks / Grass board blocks */}
-        <rect x="20" y="20" width="80" height="70" rx="16" fill="#A7F3D0" opacity="0.6" />
-        <text x="32" y="58" fill="#047857" fontSize="9" fontWeight="bold" fontFamily="sans-serif">Avon Green</text>
+        <line x1="-10" y1={MAP_H * 0.75} x2={MAP_W + 10} y2={MAP_H * 0.75} stroke="#FAF8F5" strokeWidth="20" strokeLinecap="round" />
+        <line x1="-10" y1={MAP_H * 0.75} x2={MAP_W + 10} y2={MAP_H * 0.75} stroke="#D1D5DB" strokeWidth="1" strokeDasharray="6,6" />
 
-        <rect x="210" y="160" width="120" height="100" rx="20" fill="#A7F3D0" opacity="0.6" />
-        <text x="235" y="210" fill="#047857" fontSize="9" fontWeight="bold" fontFamily="sans-serif">Wildwood Park</text>
+        {/* Green park patches */}
+        <rect x="20" y="20" width="80" height="60" rx="14" fill="#A7F3D0" opacity="0.55" />
+        <rect x={MAP_W * 0.58} y={MAP_H * 0.33} width="110" height="90" rx="18" fill="#A7F3D0" opacity="0.55" />
+        <circle cx="55" cy={MAP_H * 0.88} r="38" fill="#A7F3D0" opacity="0.55" />
 
-        <circle cx="60" cy="420" r="40" fill="#A7F3D0" opacity="0.6" />
+        {/* Empty state label */}
+        {stations.length === 0 && (
+          <text
+            x={MAP_W / 2}
+            y={MAP_H / 2}
+            textAnchor="middle"
+            fill="#9CA3AF"
+            fontSize="13"
+            fontFamily="sans-serif"
+          >
+            No stations loaded
+          </text>
+        )}
 
-        {/* Draw Pins and click bounds */}
-        {stations.map((st, index) => {
+        {/* Station pins projected from real coords */}
+        {stationPins.map((st, index) => {
           const isSelected = st.id === selectedStationId;
-          // Cleanliness tier color
-          const color = st.cleanlinessTier === 'clean' ? '#1D9E75' :
-                        st.cleanlinessTier === 'mixed' ? '#BA7517' :
-                        st.cleanlinessTier === 'gross' ? '#E24B4A' :
-                        '#6B6B6B';
-          
+          const color =
+            st.cleanlinessTier === 'clean' ? '#1D9E75' :
+            st.cleanlinessTier === 'mixed' ? '#BA7517' :
+            st.cleanlinessTier === 'gross' ? '#E24B4A' :
+            '#6B6B6B';
           const isUnrated = st.cleanlinessTier === 'unrated';
 
           return (
@@ -1726,19 +1891,18 @@ function GameMapSVG({
               onClick={() => onPinSelect(st.id)}
               className="cursor-pointer"
               style={{
-                // Drop bounce stagger
                 animation: `pin-drop-bounce 0.6s cubic-bezier(0.25, 1, 0.5, 1) ${index * 0.12}s forwards`,
                 transform: 'translateY(-100px)',
                 opacity: 0,
               }}
             >
-              {/* Pin Base Shadow */}
-              <ellipse cx={st.longitude} cy={st.latitude + 14} rx="6" ry="3" fill="#1e293b" opacity="0.25" />
+              {/* Pin base shadow */}
+              <ellipse cx={st.x} cy={st.y + 14} rx="6" ry="3" fill="#1e293b" opacity="0.25" />
 
-              {/* Pin Pill Label */}
+              {/* Pin pill */}
               <rect
-                x={st.longitude - 22}
-                y={st.latitude - 14}
+                x={st.x - 22}
+                y={st.y - 14}
                 width="44"
                 height="22"
                 rx="11"
@@ -1750,15 +1914,15 @@ function GameMapSVG({
                 className="transition-all duration-300"
               />
 
-              {/* Emoji restroom icon inside pill */}
-              <text x={st.longitude - 14} y={st.latitude + 1} fontSize="10" fill="#ffffff">
+              {/* Icon */}
+              <text x={st.x - 14} y={st.y + 1} fontSize="10" fill="#ffffff">
                 {isUnrated ? '❔' : '🚽'}
               </text>
 
-              {/* Pin score text */}
+              {/* Score */}
               <text
-                x={st.longitude + 6}
-                y={st.latitude + 1}
+                x={st.x + 6}
+                y={st.y + 1}
                 fontSize="8"
                 fontWeight="bold"
                 fill="#ffffff"
@@ -1768,201 +1932,25 @@ function GameMapSVG({
                 {isUnrated ? '?' : st.score}
               </text>
 
-              {/* Pointer indicator */}
+              {/* Pointer triangle */}
               <path
-                d={`M ${st.longitude} ${st.latitude + 8} L ${st.longitude - 4} ${st.latitude + 4} L ${st.longitude + 4} ${st.latitude + 4} Z`}
+                d={`M ${st.x} ${st.y + 8} L ${st.x - 4} ${st.y + 4} L ${st.x + 4} ${st.y + 4} Z`}
                 fill={isSelected ? '#1B2A4A' : color}
               />
             </g>
           );
         })}
+
+        {/* User position dot */}
+        {userPin && (
+          <g>
+            <circle cx={userPin.x} cy={userPin.y} r="10" fill="#378ADD" opacity="0.2" />
+            <circle cx={userPin.x} cy={userPin.y} r="6" fill="#378ADD" stroke="#ffffff" strokeWidth="2" />
+            <circle cx={userPin.x} cy={userPin.y} r="3" fill="#ffffff" />
+          </g>
+        )}
       </svg>
     </div>
   );
 }
 
-// Side Spec Metadata dynamic loader depending on active screen
-function FigmaSpecSidebar({ activeScreen }: { activeScreen: ScreenId }) {
-  const specs: Record<
-    ScreenId,
-    {
-      title: string;
-      device: string;
-      grid: string;
-      typography: string[];
-      colors: string[];
-      components: string[];
-      details: string;
-    }
-  > = {
-    '00_Splash': {
-      title: '00 PITSTOP Splash Screen',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H1 (48px, weight 900) PITSTOP', 'Outfit H2 (20px, weight 700) Tagline', 'Inter Body (14px, weight 400)'],
-      colors: ['Light Blue gradient (#A8D5FF → #7FB3E5)', 'Dark Blue (#003366)', 'Brand Blue (#0052CC)', 'White (#FFFFFF)'],
-      components: ['Map Pin Logo', 'Toilet Icon', 'Action Buttons (Find, Rate, Help Others)', 'SN Badge'],
-      details: 'Community-driven splash screen branded as "PITSTOP". Tappable to dismiss and proceed to onboarding. Emphasizes "Powered by Station Nation".',
-    },
-    '01a_Intro': {
-      title: '01a Onboarding Intro',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H1 (24px, weight 600)', 'Inter Body (16px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Night Ink (#1B2A4A)', 'White (#FFFFFF)'],
-      components: ['Primary button (comp/Button/Primary)'],
-      details: 'Splash intro to wow the driver. Highlights the Clean Loop value proposition and allows entry into permission screens.',
-    },
-    '01b_Location': {
-      title: '01b Location Permission',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Safety/Info Blue (#378ADD)', 'Neutral-900 (#1A1A1A)'],
-      components: ['Primary button', 'Secondary outline button'],
-      details: 'Asks permission showing context of nearby stops. Includes an explanation of why location access is requested.',
-    },
-    '01c_Avatar': {
-      title: '01c Create Avatar',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Caption (13px, weight 400)', 'Inter Body (16px, weight 400)'],
-      colors: ['Warm Coral (#D85A30)', 'Neutral-300 (#CFCFCF)'],
-      components: ['comp/Avatar (large)', 'Primary button'],
-      details: 'Anonymizes the user with a rounded geometric avatar and unique user handles. Real names are not stored to preserve privacy.',
-    },
-    '03_MapHome': {
-      title: '03 Map Home Screen',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H3 (16px, weight 500)', 'Inter Caption (13px, weight 400)', 'Inter Micro (12px, weight 500)'],
-      colors: ['Neutral-100 (#F2F2F2) Map background', 'Clean Green (#1D9E75)', 'Caution Amber (#BA7517)', 'Gross Red (#E24B4A)'],
-      components: ['comp/Searchbar', 'comp/FilterChip', 'comp/StationPin', 'comp/StationListCard', 'comp/BottomTabBar'],
-      details: 'Primary app board. Horizontal filter chips scroll at the top. The Bottom Sheet is draggable to reveal stops sorted by distance.',
-    },
-    '04_FilterSheet': {
-      title: '04 Filter Sheet Modal',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Safety/Info Blue (#378ADD)'],
-      components: ['Primary button', 'Bottom Grab Handle', 'Toggle Switch control'],
-      details: 'Half-height sheet modal overlaying MapHome. Triggers location & safety preferences. Segmented control limits ratings.',
-    },
-    '05_StationDetail': {
-      title: '05 Station Details',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H1 (24px, weight 600) Aggregate score', 'Outfit H3 (16px, weight 500) Title', 'Inter Caption (13px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Safety/Info Blue (#378ADD)', 'Warm Coral (#D85A30)'],
-      components: ['comp/AggregateScoreBlock', 'comp/SubRatingRow', 'comp/SafetyBadge', 'comp/FreshnessModule', 'comp/VoteControl'],
-      details: 'Detailed restrooms logs for a single station. Shows granular clean/friendly scores and user validation questions.',
-    },
-    '06_Rate_Step1': {
-      title: '06 Two-Tap Rating (Step 1)',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Gross Red (#E24B4A)'],
-      components: ['comp/TwoTapRateButtons', 'Link text'],
-      details: 'Core MVP workflow. Users can rate a restroom in exactly two taps. Tapping Clean or Gross instantly logs the review.',
-    },
-    '07_Rate_Step2': {
-      title: '07 Optional Note (Step 2)',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Warm Coral (#D85A30) Selected tags', 'Neutral-300 (#CFCFCF) dashed border'],
-      components: ['comp/QuickTagChip', 'Primary button'],
-      details: 'Optional details flow showing helper tags (Stocked, Smelled Bad, Out of order) and a camera icon box for validation.',
-    },
-    '08_Rate_Confirm': {
-      title: '08 Rate Confirmation',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500) Thanks', 'Inter Micro (12px, weight 500) pts badge'],
-      colors: ['Clean Green (#1D9E75) check', 'Warm Coral (#D85A30) toast'],
-      components: ['comp/RewardToast', 'Primary button'],
-      details: 'Celebratory confirmation screen. Triggers a drop confetti splash and ticks up the streak flame indicator.',
-    },
-    '09_Profile': {
-      title: '09 Driver Profile Dashboard',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500) Username', 'Outfit H3 (16px, weight 500) Stats', 'Inter Caption (13px, weight 400)'],
-      colors: ['Safety/Info Blue (#378ADD)', 'Warm Coral (#D85A30)'],
-      components: ['comp/Avatar (large)', '2x2 Metric Grid cards', 'Achievement chips', 'comp/BottomTabBar'],
-      details: 'Drives gamified engagement. Summarizes total points earned, local rank, and recent logs logged by the user.',
-    },
-    '10_EmptyState': {
-      title: '10 Empty State (Unrated)',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H3 (16px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Neutral-600 (#6B6B6B) Text', 'Warm Coral (#D85A30) Button'],
-      components: ['Illustration placeholder', 'Primary button'],
-      details: 'Variants of Station Details for locations with no prior logs. Features early bird double points incentive (+20 pts).',
-    },
-  };
-
-  const spec = specs[activeScreen];
-
-  return (
-    <div className="flex flex-col gap-4 text-xs">
-      <div>
-        <span className="text-[10px] bg-brand-teal/20 text-teal-300 px-2 py-0.5 rounded font-mono font-semibold">
-          ACTIVE SPEC
-        </span>
-        <h3 className="font-display text-lg font-bold text-white mt-1.5">{spec.title}</h3>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Figma Device Spec</span>
-        <p className="text-slate-200 font-medium">Device: {spec.device}</p>
-        <p className="text-slate-200 font-medium">Grid: {spec.grid}</p>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Active Typographies</span>
-        <ul className="list-disc list-inside text-slate-200 flex flex-col gap-1">
-          {spec.typography.map((font) => (
-            <li key={font} className="truncate">{font}</li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Aesthetic Palette Colors</span>
-        <div className="flex flex-wrap gap-1.5 mt-1">
-          {spec.colors.map((color) => (
-            <span
-              key={color}
-              className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-300"
-            >
-              {color}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Components Utilized</span>
-        <div className="flex flex-wrap gap-1 mt-1">
-          {spec.components.map((comp) => (
-            <span
-              key={comp}
-              className="px-2 py-0.5 rounded bg-[#172033] border border-blue-900 text-[10px] text-blue-300"
-            >
-              {comp}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Design Details</span>
-        <p className="text-slate-300 font-light leading-relaxed">{spec.details}</p>
-      </div>
-    </div>
-  );
-}
