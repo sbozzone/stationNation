@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ScreenId, Station, CleanlinessTier, SafetyBadge, Review, TransitionType } from './types';
 import { mockStations } from './mockData';
 import { fetchStations, submitReview } from '../lib/data';
@@ -47,21 +47,18 @@ export default function Home() {
   const [peopleHelped, setPeopleHelped] = useState<number>(132);
   const [cityRank, setCityRank] = useState<number>(3);
   
-  // Simulator Controls State
-  const [safeAtNightMode, setSafeAtNightMode] = useState<boolean>(true); // Night ink background inside device
-  const [showGridOverlay, setShowGridOverlay] = useState<boolean>(false);
-  const [showSpecPanel, setShowSpecPanel] = useState<boolean>(true);
+  // Theme / UX State
+  const [safeAtNightMode] = useState<boolean>(true); // Night ink background
   const [confetti, setConfetti] = useState<ConfettiParticle[]>([]);
-  const [simLog, setSimLog] = useState<string[]>([
-    'System: Station Nation Simulator initialized.',
-    'System: Current user: DriverAlpha · Streak: 3 days · Points: 1240.'
-  ]);
   const [mapRecenterTrigger, setMapRecenterTrigger] = useState<number>(0);
 
-  // Quick helper to log actions
-  const logAction = (msg: string) => {
-    setSimLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 19)]);
-  };
+  // Container ref for confetti bounds
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // No-op action logger (call sites preserved, logs to console only)
+  const logAction = useCallback((msg: string) => {
+    console.log(`[StationNation] ${msg}`);
+  }, []);
 
   // Find active station details
   const activeStation = stations.find((s) => s.id === selectedStationId) || stations[0];
@@ -78,11 +75,14 @@ export default function Home() {
   const triggerConfetti = () => {
     const colors = ['#1D9E75', '#D85A30', '#378ADD', '#BA7517', '#E24B4A', '#F7F5F0', '#FCD34D'];
     const newConfetti: ConfettiParticle[] = [];
+    const rect = containerRef.current?.getBoundingClientRect();
+    const cx = rect ? rect.width / 2 : 196;
+    const cy = rect ? rect.height * 0.47 : 400;
     for (let i = 0; i < 40; i++) {
       newConfetti.push({
         id: Math.random() + i,
-        x: 196, // center of screen width
-        y: 400, // center height
+        x: cx,
+        y: cy,
         color: colors[Math.floor(Math.random() * colors.length)],
         angle: Math.random() * 360,
         speed: 3 + Math.random() * 8,
@@ -96,6 +96,8 @@ export default function Home() {
   // Animate Confetti
   useEffect(() => {
     if (confetti.length === 0) return;
+    const containerHeight = containerRef.current?.getBoundingClientRect().height ?? 852;
+    const containerWidth = containerRef.current?.getBoundingClientRect().width ?? 393;
     const interval = setInterval(() => {
       setConfetti((prev) =>
         prev
@@ -106,7 +108,7 @@ export default function Home() {
             speed: p.speed * 0.96, // Drag
             rotation: p.rotation + 4,
           }))
-          .filter((p) => p.y < 852 && p.x > 0 && p.x < 393)
+          .filter((p) => p.y < containerHeight && p.x > 0 && p.x < containerWidth)
       );
     }, 16);
     return () => clearInterval(interval);
@@ -333,23 +335,6 @@ export default function Home() {
     }, 3000);
   };
 
-  // Reset entire simulator back to onboarding
-  const handleResetSimulator = () => {
-    setStations(useDemoMode ? mockStations : []);
-    setSelectedStationId('chevron-valley');
-    resetRatingFlow();
-    setUsername('DriverAlpha');
-    setPoints(1240);
-    setStreak(3);
-    setStationsRated(47);
-    setPeopleHelped(132);
-    setCityRank(3);
-    setActiveScreen('01a_Intro');
-    setPrevScreen(null);
-    setTransitionType('dissolve');
-    logAction('Simulator fully reset to Onboarding intro.');
-  };
-
   // Filters calculation
   const filteredStations = stations.filter((station) => {
     // If search text is present
@@ -374,41 +359,14 @@ export default function Home() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#060F24] select-none font-sans">
-      {/* Ambient glow behind phone */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[500px] h-[500px] bg-[#1A52B5]/20 rounded-full blur-[120px] pointer-events-none" />
-
-      {/* Phone shell */}
-      <div className="relative w-[393px] h-[852px] rounded-[48px] border-[10px] border-[#1e293b] shadow-[0_40px_80px_-20px_rgba(0,0,0,0.9)] bg-slate-900 overflow-hidden flex flex-col">
-
-        {/* Dynamic Island */}
-        <div className="absolute top-[11px] left-1/2 -translate-x-1/2 w-[110px] h-[30px] bg-black rounded-full z-[999]" />
-
-        {/* Status Bar */}
-        <div className={`absolute top-0 left-0 right-0 h-[59px] px-8 pt-3 flex items-center justify-between z-[998] text-xs font-semibold ${
-          safeAtNightMode && activeScreen !== '01a_Intro' && activeScreen !== '01b_Location' && activeScreen !== '01c_Avatar'
-            ? 'text-slate-100 bg-[#1B2A4A]/50 backdrop-blur-sm'
-            : 'text-slate-900 bg-white/50 backdrop-blur-sm'
-        }`}>
-          <span>15:47</span>
-          <div className="flex items-center gap-1.5">
-            <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-              <rect x="2" y="18" width="3" height="4" rx="0.5" />
-              <rect x="7" y="14" width="3" height="8" rx="0.5" />
-              <rect x="12" y="10" width="3" height="12" rx="0.5" />
-              <rect x="17" y="5" width="3" height="17" rx="0.5" />
-            </svg>
-            <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-              <path d="M12 21a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm-8.8-8.8A12 12 0 0 1 12 6c3.2 0 6.2 1.3 8.3 3.4l-1.4 1.4A10 10 0 0 0 12 8a10 10 0 0 0-6.9 2.8l-1.4-1.4zm2.8 2.8A8 8 0 0 1 12 10c2.2 0 4.2.9 5.7 2.4l-1.4 1.4A6 6 0 0 0 12 12a6 6 0 0 0-4.3 1.8l-1.4-1.4z" />
-            </svg>
-            <div className="w-5 h-2.5 border border-current rounded-sm p-0.5 flex items-center">
-              <div className="h-full w-4 bg-current rounded-2xs" />
-            </div>
-          </div>
-        </div>
-
+      {/* App container: full viewport on mobile, phone-width on desktop */}
+      <div
+        ref={containerRef}
+        className="relative w-full max-w-[430px] h-[100dvh] mx-auto bg-slate-900 overflow-hidden flex flex-col"
+      >
         {/* Demo Mode badge */}
         {useDemoMode && (
-          <div className="absolute top-[64px] left-1/2 -translate-x-1/2 z-[997] pointer-events-none">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[997] pointer-events-none">
             <span className="px-2.5 py-1 rounded-full bg-amber-400 text-slate-900 text-[10px] font-bold uppercase tracking-wider shadow-lg">
               Demo Mode
             </span>
@@ -482,16 +440,6 @@ export default function Home() {
             logAction={logAction}
           />
         </div>
-
-        {/* Bottom Home Indicator */}
-        <div className="absolute bottom-0 left-0 right-0 h-[34px] z-[998] flex items-center justify-center pointer-events-none">
-          <div className={`w-[134px] h-[5px] rounded-full ${
-            safeAtNightMode && activeScreen !== '01a_Intro' && activeScreen !== '01b_Location' && activeScreen !== '01c_Avatar'
-              ? 'bg-white/40'
-              : 'bg-neutral-800/40'
-          }`} />
-        </div>
-
       </div>
     </div>
   );
@@ -582,7 +530,7 @@ function DeviceScreenRouter({
 
   const currentStation = allStations.find((s) => s.id === selectedStationId) || allStations[0];
 
-  // Helper theme classes inside phone simulator
+  // Helper theme classes
   const uiTheme = safeAtNightMode
     ? 'bg-[#1B2A4A] text-slate-100' // Night Ink palette
     : 'bg-[#F7F5F0] text-neutral-900'; // Off-white palette
@@ -655,7 +603,7 @@ function DeviceScreenRouter({
     // ONBOARDING 01a INTRO
     case '01a_Intro':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-gradient-to-b from-[#1A52B5] to-[#0D2255] p-6 text-white pt-24 pb-12 select-none h-full">
+        <div className="flex-1 flex flex-col justify-between bg-gradient-to-b from-[#1A52B5] to-[#0D2255] p-6 text-white pt-[max(env(safe-area-inset-top),24px)] pb-12 select-none h-full">
           <div className="flex flex-col items-center text-center mt-12">
             {/* Logo */}
             <div className="w-20 h-20 bg-white/10 rounded-2xl border border-white/20 flex items-center justify-center shadow-2xl mb-8">
@@ -695,7 +643,7 @@ function DeviceScreenRouter({
     // ONBOARDING 01b LOCATION
     case '01b_Location':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-24 pb-12 h-full">
+        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-[max(env(safe-area-inset-top),24px)] pb-12 h-full">
           <div className="flex flex-col items-center text-center mt-12">
             <div className="w-16 h-16 bg-[#1A52B5]/30 rounded-full flex items-center justify-center text-[#5B9BD5] mb-6">
               <svg className="w-8 h-8 animate-bounce" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -731,7 +679,7 @@ function DeviceScreenRouter({
     // ONBOARDING 01c AVATAR
     case '01c_Avatar':
       return (
-        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-24 pb-12 h-full">
+        <div className="flex-1 flex flex-col justify-between bg-[#0D2255] p-6 text-white pt-[max(env(safe-area-inset-top),24px)] pb-12 h-full">
           <div className="flex flex-col items-center mt-6">
             <span className="text-xs font-semibold text-[#5B9BD5] uppercase tracking-widest mb-2">Step 3 of 3</span>
             <h2 className="text-2xl font-display font-semibold text-slate-100 text-center mb-6">
@@ -780,7 +728,7 @@ function DeviceScreenRouter({
       return (
         <div className={`flex-1 flex flex-col h-full overflow-hidden ${uiTheme}`}>
           {/* Top Search Bar (y≈59) */}
-          <div className={`p-4 pt-16 flex flex-col gap-2.5 z-10 ${borderTheme} border-b ${safeAtNightMode ? 'bg-[#1B2A4A]/90' : 'bg-white/95'} backdrop-blur`}>
+          <div className={`p-4 pt-[max(env(safe-area-inset-top),16px)] flex flex-col gap-2.5 z-10 ${borderTheme} border-b ${safeAtNightMode ? 'bg-[#1B2A4A]/90' : 'bg-white/95'} backdrop-blur`}>
             <div className="relative">
               <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -1023,7 +971,7 @@ function DeviceScreenRouter({
     // STATION DETAIL 05
     case '05_StationDetail':
       return (
-        <div className={`flex-1 flex flex-col h-full overflow-y-auto pt-16 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col h-full overflow-y-auto pt-[max(env(safe-area-inset-top),16px)] pb-12 ${uiTheme}`}>
           
           {/* Refreshness success Toast */}
           {showToast && (
@@ -1216,7 +1164,7 @@ function DeviceScreenRouter({
     // RATE STEP 1: Two-tap core loop (06)
     case '06_Rate_Step1':
       return (
-        <div className={`flex-1 flex flex-col justify-between p-6 pt-24 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between p-6 pt-[max(env(safe-area-inset-top),24px)] pb-12 ${uiTheme}`}>
           <div className="flex flex-col gap-6">
             {/* Header / Title */}
             <div className="text-center">
@@ -1293,7 +1241,7 @@ function DeviceScreenRouter({
     // RATE STEP 2: Optional details (07)
     case '07_Rate_Step2':
       return (
-        <div className={`flex-1 flex flex-col justify-between p-5 pt-16 pb-10 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between p-5 pt-[max(env(safe-area-inset-top),16px)] pb-10 ${uiTheme}`}>
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between border-b border-slate-800/40 pb-2">
               <button
@@ -1394,7 +1342,7 @@ function DeviceScreenRouter({
     // RATE CONFIRM 08 (Confetti overlay, Streak + points tick up)
     case '08_Rate_Confirm':
       return (
-        <div className={`flex-1 flex flex-col justify-between p-6 pt-24 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between p-6 pt-[max(env(safe-area-inset-top),24px)] pb-12 ${uiTheme}`}>
           <div className="flex flex-col items-center text-center mt-12">
             
             {/* Green Check Icon */}
@@ -1454,7 +1402,7 @@ function DeviceScreenRouter({
     // PROFILE 09
     case '09_Profile':
       return (
-        <div className={`flex-1 flex flex-col justify-between pt-16 pb-12 overflow-y-auto ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between pt-[max(env(safe-area-inset-top),16px)] pb-12 overflow-y-auto ${uiTheme}`}>
           <div className="p-4 flex flex-col gap-6">
             
             {/* User Profile Header */}
@@ -1545,7 +1493,7 @@ function DeviceScreenRouter({
     // EMPTY STATE: Unrated Station (10)
     case '10_EmptyState':
       return (
-        <div className={`flex-1 flex flex-col justify-between pt-16 pb-12 ${uiTheme}`}>
+        <div className={`flex-1 flex flex-col justify-between pt-[max(env(safe-area-inset-top),16px)] pb-12 ${uiTheme}`}>
           {/* Header */}
           <div className={`px-4 py-3 flex items-center justify-between border-b ${borderTheme}`}>
             <button
@@ -1602,7 +1550,7 @@ function DeviceScreenRouter({
 // Bottom tab bar reusable component inside phone (56px size)
 function BottomTabBar({ activeTab, navigateTo }: { activeTab: 'map' | 'profile'; navigateTo: any }) {
   return (
-    <div className="absolute bottom-[34px] left-0 right-0 h-[56px] bg-slate-900 border-t border-slate-800 flex items-center justify-between px-10 z-[990]">
+    <div className="absolute bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex items-center justify-between px-10 z-[990]" style={{ paddingBottom: 'env(safe-area-inset-bottom)', minHeight: '56px' }}>
       {/* Map Tab */}
       <button
         onClick={() => navigateTo('03_MapHome', 'instant')}
@@ -1781,188 +1729,3 @@ function GameMapSVG({
   );
 }
 
-// Side Spec Metadata dynamic loader depending on active screen
-function FigmaSpecSidebar({ activeScreen }: { activeScreen: ScreenId }) {
-  const specs: Record<
-    ScreenId,
-    {
-      title: string;
-      device: string;
-      grid: string;
-      typography: string[];
-      colors: string[];
-      components: string[];
-      details: string;
-    }
-  > = {
-    '00_Splash': {
-      title: '00 PITSTOP Splash Screen',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H1 (48px, weight 900) PITSTOP', 'Outfit H2 (20px, weight 700) Tagline', 'Inter Body (14px, weight 400)'],
-      colors: ['Light Blue gradient (#A8D5FF → #7FB3E5)', 'Dark Blue (#003366)', 'Brand Blue (#0052CC)', 'White (#FFFFFF)'],
-      components: ['Map Pin Logo', 'Toilet Icon', 'Action Buttons (Find, Rate, Help Others)', 'SN Badge'],
-      details: 'Community-driven splash screen branded as "PITSTOP". Tappable to dismiss and proceed to onboarding. Emphasizes "Powered by Station Nation".',
-    },
-    '01a_Intro': {
-      title: '01a Onboarding Intro',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H1 (24px, weight 600)', 'Inter Body (16px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Night Ink (#1B2A4A)', 'White (#FFFFFF)'],
-      components: ['Primary button (comp/Button/Primary)'],
-      details: 'Splash intro to wow the driver. Highlights the Clean Loop value proposition and allows entry into permission screens.',
-    },
-    '01b_Location': {
-      title: '01b Location Permission',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Safety/Info Blue (#378ADD)', 'Neutral-900 (#1A1A1A)'],
-      components: ['Primary button', 'Secondary outline button'],
-      details: 'Asks permission showing context of nearby stops. Includes an explanation of why location access is requested.',
-    },
-    '01c_Avatar': {
-      title: '01c Create Avatar',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Caption (13px, weight 400)', 'Inter Body (16px, weight 400)'],
-      colors: ['Warm Coral (#D85A30)', 'Neutral-300 (#CFCFCF)'],
-      components: ['comp/Avatar (large)', 'Primary button'],
-      details: 'Anonymizes the user with a rounded geometric avatar and unique user handles. Real names are not stored to preserve privacy.',
-    },
-    '03_MapHome': {
-      title: '03 Map Home Screen',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H3 (16px, weight 500)', 'Inter Caption (13px, weight 400)', 'Inter Micro (12px, weight 500)'],
-      colors: ['Neutral-100 (#F2F2F2) Map background', 'Clean Green (#1D9E75)', 'Caution Amber (#BA7517)', 'Gross Red (#E24B4A)'],
-      components: ['comp/Searchbar', 'comp/FilterChip', 'comp/StationPin', 'comp/StationListCard', 'comp/BottomTabBar'],
-      details: 'Primary app board. Horizontal filter chips scroll at the top. The Bottom Sheet is draggable to reveal stops sorted by distance.',
-    },
-    '04_FilterSheet': {
-      title: '04 Filter Sheet Modal',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Safety/Info Blue (#378ADD)'],
-      components: ['Primary button', 'Bottom Grab Handle', 'Toggle Switch control'],
-      details: 'Half-height sheet modal overlaying MapHome. Triggers location & safety preferences. Segmented control limits ratings.',
-    },
-    '05_StationDetail': {
-      title: '05 Station Details',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H1 (24px, weight 600) Aggregate score', 'Outfit H3 (16px, weight 500) Title', 'Inter Caption (13px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Safety/Info Blue (#378ADD)', 'Warm Coral (#D85A30)'],
-      components: ['comp/AggregateScoreBlock', 'comp/SubRatingRow', 'comp/SafetyBadge', 'comp/FreshnessModule', 'comp/VoteControl'],
-      details: 'Detailed restrooms logs for a single station. Shows granular clean/friendly scores and user validation questions.',
-    },
-    '06_Rate_Step1': {
-      title: '06 Two-Tap Rating (Step 1)',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Clean Green (#1D9E75)', 'Gross Red (#E24B4A)'],
-      components: ['comp/TwoTapRateButtons', 'Link text'],
-      details: 'Core MVP workflow. Users can rate a restroom in exactly two taps. Tapping Clean or Gross instantly logs the review.',
-    },
-    '07_Rate_Step2': {
-      title: '07 Optional Note (Step 2)',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Warm Coral (#D85A30) Selected tags', 'Neutral-300 (#CFCFCF) dashed border'],
-      components: ['comp/QuickTagChip', 'Primary button'],
-      details: 'Optional details flow showing helper tags (Stocked, Smelled Bad, Out of order) and a camera icon box for validation.',
-    },
-    '08_Rate_Confirm': {
-      title: '08 Rate Confirmation',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500) Thanks', 'Inter Micro (12px, weight 500) pts badge'],
-      colors: ['Clean Green (#1D9E75) check', 'Warm Coral (#D85A30) toast'],
-      components: ['comp/RewardToast', 'Primary button'],
-      details: 'Celebratory confirmation screen. Triggers a drop confetti splash and ticks up the streak flame indicator.',
-    },
-    '09_Profile': {
-      title: '09 Driver Profile Dashboard',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H2 (18px, weight 500) Username', 'Outfit H3 (16px, weight 500) Stats', 'Inter Caption (13px, weight 400)'],
-      colors: ['Safety/Info Blue (#378ADD)', 'Warm Coral (#D85A30)'],
-      components: ['comp/Avatar (large)', '2x2 Metric Grid cards', 'Achievement chips', 'comp/BottomTabBar'],
-      details: 'Drives gamified engagement. Summarizes total points earned, local rank, and recent logs logged by the user.',
-    },
-    '10_EmptyState': {
-      title: '10 Empty State (Unrated)',
-      device: 'iPhone 16 (393 × 852 px)',
-      grid: '4 columns, 16px margins, 16px gutter',
-      typography: ['Outfit H3 (16px, weight 500)', 'Inter Body (16px, weight 400)'],
-      colors: ['Neutral-600 (#6B6B6B) Text', 'Warm Coral (#D85A30) Button'],
-      components: ['Illustration placeholder', 'Primary button'],
-      details: 'Variants of Station Details for locations with no prior logs. Features early bird double points incentive (+20 pts).',
-    },
-  };
-
-  const spec = specs[activeScreen];
-
-  return (
-    <div className="flex flex-col gap-4 text-xs">
-      <div>
-        <span className="text-[10px] bg-brand-teal/20 text-teal-300 px-2 py-0.5 rounded font-mono font-semibold">
-          ACTIVE SPEC
-        </span>
-        <h3 className="font-display text-lg font-bold text-white mt-1.5">{spec.title}</h3>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Figma Device Spec</span>
-        <p className="text-slate-200 font-medium">Device: {spec.device}</p>
-        <p className="text-slate-200 font-medium">Grid: {spec.grid}</p>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Active Typographies</span>
-        <ul className="list-disc list-inside text-slate-200 flex flex-col gap-1">
-          {spec.typography.map((font) => (
-            <li key={font} className="truncate">{font}</li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Aesthetic Palette Colors</span>
-        <div className="flex flex-wrap gap-1.5 mt-1">
-          {spec.colors.map((color) => (
-            <span
-              key={color}
-              className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] font-mono text-slate-300"
-            >
-              {color}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Components Utilized</span>
-        <div className="flex flex-wrap gap-1 mt-1">
-          {spec.components.map((comp) => (
-            <span
-              key={comp}
-              className="px-2 py-0.5 rounded bg-[#172033] border border-blue-900 text-[10px] text-blue-300"
-            >
-              {comp}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1.5 border-t border-slate-800 pt-3">
-        <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">Design Details</span>
-        <p className="text-slate-300 font-light leading-relaxed">{spec.details}</p>
-      </div>
-    </div>
-  );
-}

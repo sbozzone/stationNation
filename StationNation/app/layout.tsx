@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Outfit, Inter } from "next/font/google";
 import "./globals.css";
 
@@ -15,8 +15,21 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Station Nation — Interactive Wireframe Spec",
-  description: "Interactive wireframe prototype to validate the clean restroom core loop.",
+  title: "Station Nation",
+  description: "Find and rate clean gas-station restrooms near you.",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Station Nation",
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
+  themeColor: "#060F24",
 };
 
 export default function RootLayout({
@@ -29,7 +42,7 @@ export default function RootLayout({
       lang="en"
       className={`${outfit.variable} ${inter.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-[#0f172a] text-[#f8fafc]">{children}</body>
+      <body className="min-h-full flex flex-col bg-[#060F24] text-[#f8fafc]">{children}</body>
     </html>
   );
 }
